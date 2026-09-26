@@ -1,0 +1,22 @@
+[Unit]
+Description=sandboxxing - systemd-nspawn sandboxes over SSH
+Documentation=https://github.com/common-creation/sandboxxing
+After=network-online.target systemd-machined.service
+Wants=network-online.target
+Requires=systemd-machined.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sandboxxing -config /etc/sandboxxing/config.json
+Restart=on-failure
+RestartSec=2
+# The daemon drives systemd-run, machinectl, mount and nft itself. The service
+# only needs to run as root; the sandboxing of the containers is handled by
+# systemd-nspawn.
+KillMode=process
+TimeoutStopSec=90
+# Wait for machined and the bridge to be available.
+ExecStartPre=/usr/bin/systemctl start systemd-machined.service
+
+[Install]
+WantedBy=multi-user.target
