@@ -197,6 +197,10 @@ type Exec struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// Env is passed to the command. The environment of the daemon is used as
+	// the base, so the variables that make a login work (HOME, PATH) are kept
+	// and only the listed entries are replaced.
+	Env []string
 	// PTY makes the command the session leader with the given terminal as its
 	// controlling terminal, which is what enables job control. It must only
 	// be set when Stdin, Stdout and Stderr are the same terminal, usually the
@@ -269,6 +273,9 @@ func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, e
 	args := append(nsenterArgs(pid), e.Argv...)
 	cmd := exec.CommandContext(ctx, "nsenter", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
+	if len(e.Env) > 0 {
+		cmd.Env = mergeEnv(os.Environ(), e.Env)
+	}
 	if e.PTY {
 		// Make the allocated terminal the controlling terminal of the
 		// session so that job control works inside the container. Setsid
@@ -290,6 +297,27 @@ func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, e
 		return nil
 	}
 	return cmd, nil
+}
+
+// mergeEnv returns base with the entries of extra applied on top. A variable
+// is replaced instead of duplicated so that the last value is the effective
+// one, matching what a shell would do when it sees both.
+func mergeEnv(base, extra []string) []string {
+	replaced := make(map[string]bool, len(extra))
+	for _, kv := range extra {
+		if name, _, ok := strings.Cut(kv, "="); ok {
+			replaced[name] = true
+		}
+	}
+	merged := make([]string, 0, len(base)+len(extra))
+	for _, kv := range base {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && replaced[name] {
+			continue
+		}
+		merged = append(merged, kv)
+	}
+	return append(merged, extra...)
 }
 
 // Status summarises the runtime state of a container.

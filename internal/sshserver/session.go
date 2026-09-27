@@ -2,6 +2,7 @@ package sshserver
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -30,6 +31,29 @@ type sessionRequest struct {
 type windowSize struct {
 	rows int
 	cols int
+}
+
+// environment returns the variables that must be visible inside the
+// container: the terminal type from the pty request and the variables the
+// client asked to forward with an env request. Without TERM programs such as
+// htop, vim and less cannot select a terminal description and either fail or
+// draw nothing.
+func (s *sessionRequest) environment() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	env := make([]string, 0, len(s.env)+1)
+	if s.term != "" {
+		env = append(env, "TERM="+s.term)
+	}
+	names := make([]string, 0, len(s.env))
+	for name := range s.env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		env = append(env, name+"="+s.env[name])
+	}
+	return env
 }
 
 // size returns the last known terminal size, defaulting to 24x80.
@@ -290,9 +314,13 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 	if hasExec && commandLine != "" {
 		argv = []string{"/bin/bash", "-lc", commandLine}
 	}
+	// TERM and the variables the client forwarded must reach the program
+	// inside the container, otherwise full screen applications cannot pick a
+	// terminal description.
+	env := session.environment()
 
 	if usePTY {
-		code, err := s.runPTY(ctx, name, argv, ch, session)
+		code, err := s.runPTY(ctx, name, argv, env, ch, session)
 		if err != nil {
 			s.fail(ch, err)
 			return
@@ -300,7 +328,7 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 		s.exitStatus(ch, code)
 		return
 	}
-	s.runPipe(ctx, name, argv, ch)
+	s.runPipe(ctx, name, argv, env, ch)
 }
 
 // notFoundError reports an unknown container name with a friendly hint.

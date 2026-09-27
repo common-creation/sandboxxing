@@ -347,6 +347,9 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 - If a TTY is requested, you get an interactive session over a PTY (job
   control and window resizing supported). Without a TTY, stdout/stderr are
   streamed separately.
+- The terminal type from the SSH `pty-req` is forwarded as `TERM`, and any
+  `env` request the client sends is applied as well, so full screen programs
+  (`htop`, `vim`, `less`) work inside the container.
 - The container's own `sshd` is not used. The host's `nsenter` enters the
   namespaces, so the container only needs to be running.
 
