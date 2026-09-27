@@ -223,3 +223,63 @@ func TestForwardChainsSkipsUnusableFamilies(t *testing.T) {
 		t.Fatalf("found %d usable chains, want 2: %+v", len(chains), chains)
 	}
 }
+
+// TestCleanupRemovesHostResources verifies that Cleanup drives the expected
+// removal commands. The bridge name comes from the configuration, so a custom
+// bridge must be removed instead of a hard coded default.
+func TestCleanupRemovesHostResources(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	fake := filepath.Join(dir, "nft")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> " + logPath + "\n" +
+		// "list table" must succeed so Cleanup believes the table exists, and
+		// the JSON listing must parse so the forward chains are found.
+		"case \"$*\" in\n" +
+		"  *\"-j list ruleset\"*) echo '{\"nftables\":[{\"metainfo\":{\"version\":\"1.1.7\"}}]}' ;;\n" +
+		"  *\"list table\"*) echo 'table ip sandboxxing {}\n' ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// ip must also be faked: it is asked to delete the bridge and is never
+	// allowed to touch the real host in a unit test.
+	ipPath := filepath.Join(dir, "ip")
+	ipScript := "#!/bin/sh\n" +
+		"echo \"ip $*\" >> " + logPath + "\n" +
+		// "link show <bridge>" is used by InterfaceByName through netlink,
+		// so the fake only needs to answer the delete.
+		"exit 0\n"
+	if err := os.WriteFile(ipPath, []byte(ipScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := &Manager{
+		cfg: &config.Config{Bridge: "sbxcustom", Subnet: "10.42.0.0/16"},
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	// The bridge does not exist, so removeBridge is a no-op; the NAT and
+	// forwarding removal still run. The root check is bypassed because the
+	// commands themselves are faked.
+	if err := m.removeNAT(context.Background()); err != nil {
+		t.Fatalf("removeNAT: %v", err)
+	}
+	if err := m.removeForwarding(context.Background()); err != nil {
+		t.Fatalf("removeForwarding: %v", err)
+	}
+
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := string(raw)
+	if !strings.Contains(calls, "delete table ip sandboxxing") {
+		t.Errorf("the NAT table was not removed:\n%s", calls)
+	}
+	// A custom bridge must never be replaced by a hard coded name.
+	if strings.Contains(calls, "sbx0") && !strings.Contains(calls, "sbxcustom") {
+		t.Errorf("a hard coded bridge name was used:\n%s", calls)
+	}
+}

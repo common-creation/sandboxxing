@@ -227,6 +227,94 @@ func (m *Manager) ensureNAT(ctx context.Context) error {
 	return nil
 }
 
+// Cleanup removes the host resources that Ensure created: the accept rules in
+// the filter tables, the NAT table and the container bridge. It is used by the
+// uninstall target. Failures are collected so that one leftover does not stop
+// the removal of the rest.
+func (m *Manager) Cleanup(ctx context.Context) error {
+	if !IsRoot() {
+		return ErrNotRoot
+	}
+	var errs []error
+	if err := m.removeForwarding(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := m.removeNAT(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if err := m.removeBridge(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// removeNAT deletes the sandboxxing table with the masquerade and forward
+// rules.
+func (m *Manager) removeNAT(ctx context.Context) error {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return nil
+	}
+	out, err := m.run(ctx, "nft", "list", "table", "ip", sandboxxingTable)
+	if err != nil {
+		// The table is already gone.
+		return nil
+	}
+	if _, err := m.run(ctx, "nft", "delete", "table", "ip", sandboxxingTable); err != nil {
+		return fmt.Errorf("remove the NAT rules: %w: %s", err, out)
+	}
+	m.log.Info("removed the NAT rules", "table", sandboxxingTable)
+	return nil
+}
+
+// removeForwarding deletes the accept rules from every chain that carries
+// them, wherever a host firewall or docker put them.
+func (m *Manager) removeForwarding(ctx context.Context) error {
+	var errs []error
+	// The rules may be attached to chains that are no longer hooked, so the
+	// known locations are inspected in addition to the detected chains.
+	chains, err := m.forwardChains(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	chains = append(chains, forwardChain{Family: "ip", Table: "filter", Name: "FORWARD"})
+	chains = append(chains, forwardChain{Family: "inet", Table: "filter", Name: "forward"})
+	chains = append(chains, forwardChain{Family: "ip", Table: "filter", Name: "forward"})
+	chains = append(chains, forwardChain{Family: "inet", Table: "forward", Name: "forward"})
+
+	seen := map[string]bool{}
+	removed := 0
+	for _, chain := range chains {
+		key := chain.Family + "/" + chain.Table + "/" + chain.Name
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		n, err := m.dropForwardingRulesCount(ctx, []string{chain.Family, chain.Table, chain.Name})
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		removed += n
+	}
+	if removed > 0 {
+		m.log.Info("removed container forwarding rules", "rules", removed)
+	}
+	return errors.Join(errs...)
+}
+
+// removeBridge deletes the container bridge after the containers that used it
+// are gone. Ports attached to the bridge are removed with it.
+func (m *Manager) removeBridge(ctx context.Context) error {
+	if _, err := net.InterfaceByName(m.cfg.Bridge); err != nil {
+		return nil
+	}
+	if _, err := m.run(ctx, "ip", "link", "delete", m.cfg.Bridge); err != nil {
+		return fmt.Errorf("remove the bridge %s: %w", m.cfg.Bridge, err)
+	}
+	m.log.Info("removed the container bridge", "bridge", m.cfg.Bridge)
+	return nil
+}
+
 // forwardComment tags the rules that sandboxxing owns inside the forward
 // chains. Other software manages the same chains and its rules must be kept.
 const forwardComment = `"sandboxxing"`
@@ -418,12 +506,21 @@ func familyAcceptsIPv4(family string) bool {
 // dropForwardingRules removes the rules previously added by allowForwarding
 // from one chain, so that a changed subnet takes effect.
 func (m *Manager) dropForwardingRules(ctx context.Context, ref []string) error {
+	_, err := m.dropForwardingRulesCount(ctx, ref)
+	return err
+}
+
+// dropForwardingRulesCount removes the rules that sandboxxing added to one
+// chain and reports how many were removed. A chain that does not exist counts
+// as zero rules and is not an error.
+func (m *Manager) dropForwardingRulesCount(ctx context.Context, ref []string) (int, error) {
 	args := append([]string{"-a", "list", "chain"}, ref...)
 	out, err := m.run(ctx, "nft", args...)
 	if err != nil {
 		// The chain disappeared, so there is nothing to remove.
-		return nil
+		return 0, nil
 	}
+	removed := 0
 	for _, line := range strings.Split(out, "\n") {
 		if !strings.Contains(line, forwardComment) {
 			continue
@@ -435,10 +532,11 @@ func (m *Manager) dropForwardingRules(ctx context.Context, ref []string) error {
 		del := append([]string{"delete", "rule"}, ref...)
 		del = append(del, "handle", handle)
 		if _, err := m.run(ctx, "nft", del...); err != nil {
-			return fmt.Errorf("remove the previous forwarding rule %s: %w", handle, err)
+			return removed, fmt.Errorf("remove the previous forwarding rule %s: %w", handle, err)
 		}
+		removed++
 	}
-	return nil
+	return removed, nil
 }
 
 // handleOf extracts the rule handle from a line of `nft -a list` output.

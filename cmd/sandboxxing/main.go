@@ -41,6 +41,7 @@ func run() error {
 		showPasswd  = fs.Bool("show-password", false, "print the access password and exit")
 		logLevel    = fs.String("log-level", "", "override log_level (debug, info, warn, error)")
 		dumpConfig  = fs.Bool("dump-config", false, "print the effective configuration and exit")
+		cleanup     = fs.Bool("cleanup", false, "remove the host resources (bridge, NAT rules) and exit")
 	)
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `sandboxxing %s - systemd-nspawn sandboxes over SSH
@@ -60,6 +61,8 @@ through admin_users; any other user name is a container name:
   ssh demo@host -p 2222
 
 Run "sandboxxing -check" to verify the host. See README.md for the host setup.
+"sandboxxing -cleanup" removes the bridge and firewall rules, for example
+before an uninstall. Stop the service first.
 `)
 	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -101,6 +104,18 @@ Run "sandboxxing -check" to verify the host. See README.md for the host setup.
 	// well: the missing privileges are reported as a failed check.
 	if *checkOnly {
 		return runChecks(cfg, log, st)
+	}
+	if *cleanup {
+		vms := vm.New(cfg, log, st)
+		stopped, err := vms.StopAll(context.Background())
+		if err != nil {
+			return fmt.Errorf("stop the containers: %w", err)
+		}
+		if err := vms.CleanupHost(context.Background()); err != nil {
+			return err
+		}
+		fmt.Printf("stopped %d container(s) and removed the host resources (bridge %s)\n", stopped, cfg.Bridge)
+		return nil
 	}
 
 	lock, err := st.Lock()

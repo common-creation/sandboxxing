@@ -485,6 +485,29 @@ func (m *Manager) DiskPath(name string) string { return m.diskPath(name) }
 // EnsureHost prepares the bridge and NAT rules.
 func (m *Manager) EnsureHost(ctx context.Context) error { return m.host.Ensure(ctx) }
 
+// CleanupHost removes the bridge and the NAT rules that EnsureHost created.
+func (m *Manager) CleanupHost(ctx context.Context) error { return m.host.Cleanup(ctx) }
+
+// StopAll powers off every container. It runs before the host resources are
+// removed so that no sandbox is left without a network. The disk images are
+// kept; only the processes are terminated.
+func (m *Manager) StopAll(ctx context.Context) (int, error) {
+	var errs []error
+	stopped := 0
+	for _, vm := range m.state.List() {
+		if !m.backend.Running(ctx, vm.Name) {
+			continue
+		}
+		if err := m.backend.Stop(ctx, vm.Name); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", vm.Name, err))
+			continue
+		}
+		m.log.Info("stopped container", "name", vm.Name)
+		stopped++
+	}
+	return stopped, errors.Join(errs...)
+}
+
 // HostCheck runs the host prerequisite checks.
 func (m *Manager) HostCheck(ctx context.Context) []host.Checkable { return m.host.Check(ctx) }
 
