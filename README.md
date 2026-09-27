@@ -5,9 +5,11 @@
 **SSH プロトコル**の上に実装されています。
 
 ```
-ssh sandbox@host -p 2222 ls
-ssh sandbox@host -p 2222 new --name=demo --cpu=4 --memory=8G
-ssh demo@host -p 2222
+[user@client]$ ssh sandbox@host -p 2222 ls
+[user@client]$ ssh sandbox@host -p 2222 new --name=demo --cpu=4 --memory=8G
+[user@client]$ ssh demo@host -p 2222
+demo@host's password:
+[root@demo /]#
 ```
 
 ## 特徴
@@ -26,6 +28,7 @@ ssh demo@host -p 2222
 ## 必要な環境
 
 - Arch Linux ホスト(systemd で起動していること)
+  - その他のLinuxディストーション（ Ubuntu など）は pacstrap が提供されていても動作未確認
 - root 権限
 - 次のパッケージ:
 
