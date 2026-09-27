@@ -398,6 +398,7 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `subnet` | `10.100.0.0/16` | コンテナ用サブネット(/24 以上) |
 | `dns` | (空) | コンテナに書き込むリゾルバ。空ならホストの resolv.conf を流用(ホスト専用の `127.0.0.53` は除外) |
 | `shares` | (空) | 全コンテナに bind mount するホストディレクトリ。パス文字列または `{"path","target","read_only"}` |
+| `tmp_size` | (空) | `/tmp` の扱い。空なら nspawn 既定の tmpfs(ホストメモリの10%)、サイズ/割合で変更、`"disk"` でコンテナイメージ上に保存 |
 | `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
 | `image` | `arch` | 既定イメージ名 |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
@@ -410,6 +411,34 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `default_memory` | `2G` | `new` の既定メモリ |
 | `default_disk` | `10G` | `new` の既定ディスク |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## ポートフォワーディング
+
+同じプロトコルを話すため、OpenSSH のトンネルが両方向とも使えます。
+
+```bash
+# ローカルフォワード (ssh -L): コンテナ内のサービスを手元から参照
+ssh -L 8080:localhost:80 demo@host -p 2222
+# これで http://localhost:8080 がコンテナ demo の 80 番に届きます
+
+# localhost 以外を指定するとホストから接続されます
+ssh -L 15432:db.internal:5432 sandbox@host -p 2222
+
+# リモートフォワード (ssh -R): 手元のサービスをホスト経由で公開
+ssh -R 9000:localhost:3000 sandbox@host -p 2222
+
+# ポートをデーモンに選ばせることもできます
+ssh -R 0:localhost:3000 sandbox@host -p 2222   # "Allocated port 41234" と表示
+```
+
+- **コンテナ名で `ssh -L`** (`demo@host`): `localhost` はコンテナ自身を指す
+  ため、`-L 8080:localhost:80` は `demo` 内の 80 番に届きます。停止中の
+  コンテナは起動してから接続します。
+- **制御ユーザーで `ssh -L`** (`sandbox@host`): ホストから接続するため、
+  コンテナのアドレス、ホストのサービス、外部ネットワークに到達できます。
+- **`ssh -R`**: デーモンが listen し、接続をクライアントへ転送します。
+  バインドアドレスが空または `*` なら全インタフェース、`localhost` なら
+  ホスト内のみ。SSH 接続の終了とともに全リスナーが閉じられます。
 
 ## ホストディレクトリの共有
 
@@ -438,6 +467,34 @@ ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
   コピーやコンテナ単位のオーバーレイは行いません。
 - 既存コンテナへの追加は再起動(`restart <name>`)で反映されます。
   ホスト側のディレクトリは事前に作成してください(`-check` で確認できます)。
+
+## コンテナの /tmp のサイズ
+
+`systemd-nspawn` は各コンテナの `/tmp` を **メモリ上の tmpfs** として
+マウントします。既定のサイズはホストメモリの 10% で、16GB のホストでは
+1.6GB になります。ビルドや一時ファイルを多く書くエージェントでは不足
+しがちです。
+
+```json
+{
+  "tmp_size": "16G"
+}
+```
+
+| `tmp_size` | 動作 |
+| --- | --- |
+| (空) | nspawn 既定の tmpfs(ホストメモリの 10%) |
+| `8G`, `512M`, `1T` | 指定サイズの tmpfs |
+| `50%` | ホストメモリに対する割合の tmpfs |
+| `"disk"` | **tmpfs を使わない**。`/tmp` はコンテナのディスクイメージ上 |
+
+`"disk"` は tmpfs を無効化する(`SYSTEMD_NSPAWN_TMPFS_TMP=0`)ため、`/tmp` は
+コンテナの ext4 イメージ上の通常ディレクトリになります。容量はコンテナの
+ディスク(`new` の `--disk`、変更は `resize --disk`)で決まり、**再起動しても
+データが残ります**。一方 tmpfs の `/tmp` はコンテナ停止時に失われます。
+
+絶対値とパーセント指定は nspawn が作成したマウントの上に重ねて適用される
+ため、起動中のコンテナも次回起動時に反映されます。
 
 ## コンテナ内の DNS
 

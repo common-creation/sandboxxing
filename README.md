@@ -405,6 +405,7 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `subnet` | `10.100.0.0/16` | Subnet for containers (/24 or larger) |
 | `dns` | (empty) | Resolvers written to the containers. Empty reuses the host resolvers, skipping ones that only run on the host (`127.0.0.53`) |
 | `shares` | (empty) | Host directories bind mounted into every container: a path string or `{"path", "target", "read_only"}` |
+| `tmp_size` | (empty) | `/tmp` handling: empty keeps the nspawn default tmpfs (10% of the host memory), a size or percentage resizes it, and `"disk"` stores `/tmp` on the container image |
 | `image_dir` | `<data_dir>/images` | Cache of pacstrap trees (converted to ext4 images on `new`) |
 | `image` | `arch` | Default image name |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
@@ -417,6 +418,36 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `default_memory` | `2G` | Default memory for `new` |
 | `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## Port forwarding
+
+Both directions of the OpenSSH tunnel work, because the daemon speaks the same
+protocol:
+
+```bash
+# Local forward (ssh -L): reach a service inside a container from your machine.
+ssh -L 8080:localhost:80 demo@host -p 2222
+# now http://localhost:8080 talks to port 80 of the container "demo"
+
+# Any other target is dialed from the host:
+ssh -L 15432:db.internal:5432 sandbox@host -p 2222
+
+# Remote forward (ssh -R): expose something on your machine through the host.
+ssh -R 9000:localhost:3000 sandbox@host -p 2222
+
+# The port can be chosen by the daemon and reported back:
+ssh -R 0:localhost:3000 sandbox@host -p 2222   # prints "Allocated port 41234"
+```
+
+- **`ssh -L` with a container name** (`demo@host`): a `localhost` target means
+  the container itself, so `-L 8080:localhost:80` reaches the service that
+  listens on port 80 inside `demo`. The container is started on demand.
+- **`ssh -L` with a control user** (`sandbox@host`): the target is dialed from
+  the host, which reaches container addresses, host services and the network.
+- **`ssh -R`**: the daemon listens and hands every incoming connection to your
+  client. An empty or `*` bind address listens on every interface, a
+  `localhost` bind stays on the host. All listeners are closed when the SSH
+  connection ends.
 
 ## Sharing host directories
 
@@ -445,6 +476,38 @@ ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
   immediately. There is no copy and no per-container overlay.
 - Adding a share to an existing container needs a restart (`restart <name>`)
   and the host directory must exist; `-check` reports the configured ones.
+
+## The size of /tmp inside the containers
+
+`systemd-nspawn` mounts `/tmp` as a **memory backed tmpfs** for every
+container. Its size is 10% of the host memory by default, which is 1.6 GB on a
+16 GB host and is easily exhausted by a build or an agent that writes
+temporary files.
+
+Three settings are available:
+
+```json
+{
+  "tmp_size": "16G"
+}
+```
+
+| `tmp_size` | Result |
+| --- | --- |
+| (empty) | tmpfs with the nspawn default (10% of the host memory) |
+| `8G`, `512M`, `1T` | tmpfs with that absolute size |
+| `50%` | tmpfs with that percentage of the host memory |
+| `"disk"` | **no tmpfs**: `/tmp` lives on the container's disk image |
+
+`"disk"` disables the tmpfs entirely (`SYSTEMD_NSPAWN_TMPFS_TMP=0`), so `/tmp`
+is an ordinary directory on the container's ext4 image. It is then limited by
+the container disk (`--disk` at creation time, `resize --disk` later), which is
+the right choice for large build trees and for data that should survive a
+reboot. Anything written to a tmpfs `/tmp` is lost when the container stops.
+
+The absolute and percentage values are applied as an extra mount on top of the
+one nspawn creates, so a running container picks the setting up on its next
+start.
 
 ## DNS inside the containers
 

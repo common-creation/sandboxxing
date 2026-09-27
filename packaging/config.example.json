@@ -9,6 +9,7 @@
   "subnet": "10.100.0.0/16",
   "dns": [],
   "shares": [],
+  "tmp_size": "",
   "image": "arch",
   "mirror": "https://geo.mirror.pkgbuild.com/$repo/os/$arch",
   "arch": "x86_64",

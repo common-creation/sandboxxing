@@ -102,3 +102,25 @@ func TestDuplicateShareTargetsAreRejected(t *testing.T) {
 		t.Errorf("the error should name the target: %v", err)
 	}
 }
+
+// TestTmpSizeValidation covers the tmp_size values: an absolute size, a
+// percentage, and the typos that must be rejected before a container fails to
+// start.
+func TestTmpSizeValidation(t *testing.T) {
+	valid := []string{"", "8G", "512M", "1T", "50%", "100%", "1%", "disk", "DISK"}
+	for _, value := range valid {
+		c := Default()
+		c.TmpSize = value
+		if err := c.Validate(); err != nil {
+			t.Errorf("TmpSize %q should be accepted: %v", value, err)
+		}
+	}
+	invalid := []string{"0", "0%", "-1G", "101%", "abc", "8GB x"}
+	for _, value := range invalid {
+		c := Default()
+		c.TmpSize = value
+		if err := c.Validate(); err == nil {
+			t.Errorf("TmpSize %q should be rejected", value)
+		}
+	}
+}

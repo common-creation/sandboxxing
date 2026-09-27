@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -68,6 +69,16 @@ type Config struct {
 	// Shares are host directories that every container can access. They are
 	// bind mounted into each container when it starts.
 	Shares []Share `json:"shares"`
+
+	// TmpSize controls how /tmp is provided inside the containers.
+	//
+	//	systemd-nspawn mounts /tmp as a tmpfs with 10% of the host memory by
+	//	default, which is too small for build work.
+	//
+	// Empty keeps that default. A size ("8G") or a percentage ("50%") resizes
+	// the tmpfs. The special value "disk" turns the tmpfs off, so /tmp lives
+	// on the container's own disk image and is limited only by its size.
+	TmpSize string `json:"tmp_size"`
 
 	// ImageDir is where built root file system images are cached.
 	ImageDir string `json:"image_dir"`
@@ -299,6 +310,11 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid dns entry %q: use an IP address", server)
 		}
 	}
+	if c.TmpSize != "" {
+		if err := validateTmpSize(c.TmpSize); err != nil {
+			return err
+		}
+	}
 	seenTarget := map[string]string{}
 	for i := range c.Shares {
 		share := &c.Shares[i]
@@ -320,6 +336,32 @@ func (c *Config) Validate() error {
 		if u == "" || strings.ContainsAny(u, " \t@") {
 			return fmt.Errorf("invalid admin user name %q", u)
 		}
+	}
+	return nil
+}
+
+// validateTmpSize accepts a tmpfs size as an absolute value ("8G", "512M") or
+// as a percentage of the memory ("50%"). The kernel decides the semantics of
+// an absolute size, but a typo must be caught before a container fails to
+// start, so the shape is checked here.
+// TmpSizeDisk is the tmp_size value that stores /tmp on the container disk
+// instead of a memory backed tmpfs.
+const TmpSizeDisk = "disk"
+
+func validateTmpSize(value string) error {
+	if strings.EqualFold(value, TmpSizeDisk) {
+		return nil
+	}
+	if strings.HasSuffix(value, "%") {
+		n, err := strconv.Atoi(strings.TrimSuffix(value, "%"))
+		if err != nil || n <= 0 || n > 100 {
+			return fmt.Errorf("invalid tmp_size %q: use a percentage between 1%% and 100%%", value)
+		}
+		return nil
+	}
+	size, err := ParseDiskSize(value)
+	if err != nil || size <= 0 {
+		return fmt.Errorf("invalid tmp_size %q: use a size such as 8G or a percentage such as 50%%", value)
 	}
 	return nil
 }

@@ -68,6 +68,24 @@ func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) erro
 	// A unit left behind by an earlier failure must not block the restart.
 	_, _ = n.systemctl(ctx, "reset-failed", Unit(vm.Name))
 
+	args := n.startArgs(vm, imagePath)
+	progress.From(ctx).Step("starting container %s", vm.Name)
+	cmd := process.Command(ctx, "systemd-run", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("start container %s: %w: %s", vm.Name, err, strings.TrimSpace(string(out)))
+	}
+	if err := n.waitBoot(ctx, vm.Name); err != nil {
+		return err
+	}
+	progress.From(ctx).Step("container %s is up", vm.Name)
+	return nil
+}
+
+// startArgs builds the systemd-run command line that boots a container. The
+// resource limits are unit properties, the container settings are arguments of
+// systemd-nspawn.
+func (n *Nspawn) startArgs(vm *state.VM, imagePath string) []string {
 	args := []string{
 		"--unit=" + Unit(vm.Name),
 		"--description=sandboxxing container " + vm.Name,
@@ -86,6 +104,14 @@ func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) erro
 		// CPUQuota is expressed in percent of a single CPU.
 		args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", vm.CPU*100))
 	}
+	if strings.EqualFold(n.cfg.TmpSize, config.TmpSizeDisk) {
+		// Keep /tmp on the container's own disk image. nspawn mounts a tmpfs
+		// unless SYSTEMD_NSPAWN_TMPFS_TMP is 0; the image already carries a
+		// /tmp from pacstrap, so nothing else is needed, and the size is
+		// limited by the container disk instead of the host memory. The
+		// variable belongs to the unit, so it is passed to systemd-run.
+		args = append(args, "-E", "SYSTEMD_NSPAWN_TMPFS_TMP=0")
+	}
 	args = append(args,
 		"systemd-nspawn",
 		"--quiet",
@@ -101,6 +127,12 @@ func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) erro
 		"--link-journal=no",
 		"--console=passive",
 	)
+	if n.cfg.TmpSize != "" && !strings.EqualFold(n.cfg.TmpSize, config.TmpSizeDisk) {
+		// A custom mount on top of the one nspawn creates raises or lowers
+		// the limit. An empty value keeps the nspawn default: a tmpfs sized
+		// at 10% of the host memory.
+		args = append(args, "--tmpfs=/tmp:mode=01777,size="+n.cfg.TmpSize)
+	}
 	// Shared host directories. The bind mount is happy when the destination
 	// does not exist inside the image: nspawn creates the mount point.
 	for _, share := range n.shares(vm) {
@@ -110,18 +142,7 @@ func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) erro
 		}
 		args = append(args, option+share.Path+":"+share.MountTarget())
 	}
-
-	progress.From(ctx).Step("starting container %s", vm.Name)
-	cmd := process.Command(ctx, "systemd-run", args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("start container %s: %w: %s", vm.Name, err, strings.TrimSpace(string(out)))
-	}
-	if err := n.waitBoot(ctx, vm.Name); err != nil {
-		return err
-	}
-	progress.From(ctx).Step("container %s is up", vm.Name)
-	return nil
+	return args
 }
 
 // waitBoot waits until the container reports that it has finished booting.

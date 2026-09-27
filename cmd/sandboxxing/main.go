@@ -260,6 +260,17 @@ func authChecks(cfg *config.Config) []hostCheck {
 			Detail: "every authentication method is disabled"})
 	}
 	checks = append(checks, dnsCheck(cfg))
+	switch {
+	case cfg.TmpSize == "":
+		checks = append(checks, hostCheck{Name: "container /tmp", OK: true,
+			Detail: "tmpfs, nspawn default (10% of the host memory)"})
+	case strings.EqualFold(cfg.TmpSize, config.TmpSizeDisk):
+		checks = append(checks, hostCheck{Name: "container /tmp", OK: true,
+			Detail: "on the container disk image (no tmpfs)"})
+	default:
+		checks = append(checks, hostCheck{Name: "container /tmp", OK: true,
+			Detail: "tmpfs limited to " + cfg.TmpSize})
+	}
 	checks = append(checks, shareChecks(cfg)...)
 	return checks
 }

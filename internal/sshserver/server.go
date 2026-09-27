@@ -180,12 +180,26 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	defer sshConn.Close()
 	s.log.Info("session started", "user", sshConn.User(), "remote", sshConn.RemoteAddr().String())
 
-	go ssh.DiscardRequests(reqs)
+	// Port forwarding lives on the same connection: the global requests
+	// carry the remote forwards and the channels carry both directions.
+	forwards := &forwardState{}
+	go s.serveGlobalRequests(ctx, sshConn, reqs, forwards)
+	defer forwards.closeAll()
 
 	var sessions sync.WaitGroup
 	for newChannel := range chans {
-		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "only session channels are supported")
+		switch newChannel.ChannelType() {
+		case "session":
+		case "direct-tcpip":
+			sessions.Add(1)
+			go func() {
+				defer sessions.Done()
+				s.handleDirectTCPIP(ctx, sshConn, newChannel)
+			}()
+			continue
+		default:
+			newChannel.Reject(ssh.UnknownChannelType,
+				"only session and direct-tcpip channels are supported")
 			continue
 		}
 		channel, requests, err := newChannel.Accept()
