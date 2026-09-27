@@ -350,6 +350,8 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 - The terminal type from the SSH `pty-req` is forwarded as `TERM`, and any
   `env` request the client sends is applied as well, so full screen programs
   (`htop`, `vim`, `less`) work inside the container.
+- The login starts as `root` in root's home directory (`HOME=/root`), looked up
+  inside the container. A container without `/root` starts in `/`.
 - The container's own `sshd` is not used. The host's `nsenter` enters the
   namespaces, so the container only needs to be running.
 

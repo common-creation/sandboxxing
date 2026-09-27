@@ -2,10 +2,12 @@ package vm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -473,6 +475,43 @@ func (m *Manager) StartProcess(ctx context.Context, name string, e backend.Exec)
 		return nil, err
 	}
 	return m.backend.StartProcess(ctx, name, e)
+}
+
+// HomeDir returns the home directory of a user inside a container. The path is
+// checked inside the container, because nsenter refuses to start when the
+// working directory does not exist. An unknown user, an unreadable passwd
+// database or a missing directory falls back to the given default, so a login
+// never fails because of the lookup.
+func (m *Manager) HomeDir(ctx context.Context, name, user, fallback string) string {
+	home := fallback
+	if user != "" {
+		// getent passwd prints name:x:uid:gid:gecos:home:shell
+		if out, err := m.Output(ctx, name, []string{"getent", "passwd", user}); err == nil {
+			if fields := strings.Split(strings.TrimSpace(string(out)), ":"); len(fields) >= 7 && fields[5] != "" {
+				home = fields[5]
+			}
+		}
+	}
+	// The directory must exist, otherwise nsenter cannot enter it.
+	if _, err := m.Output(ctx, name, []string{"test", "-d", home}); err != nil {
+		m.log.Warn("home directory is missing inside the container, starting in the root",
+			"container", name, "home", home)
+		return "/"
+	}
+	return home
+}
+
+// Output runs a command inside a container and returns its standard output.
+func (m *Manager) Output(ctx context.Context, name string, argv []string) ([]byte, error) {
+	var buf bytes.Buffer
+	code, err := m.Run(ctx, name, backend.Exec{Argv: argv, Stdout: &buf, Stderr: io.Discard})
+	if err != nil {
+		return nil, err
+	}
+	if code != 0 {
+		return nil, fmt.Errorf("%s exited with status %d", argv[0], code)
+	}
+	return buf.Bytes(), nil
 }
 
 // Terminal allocates a pseudo terminal from the container's devpts instance,

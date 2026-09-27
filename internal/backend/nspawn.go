@@ -236,6 +236,8 @@ type Exec struct {
 	// the base, so the variables that make a login work (HOME, PATH) are kept
 	// and only the listed entries are replaced.
 	Env []string
+	// Dir is the working directory inside the container. It defaults to /.
+	Dir string
 	// PTY makes the command the session leader with the given terminal as its
 	// controlling terminal, which is what enables job control. It must only
 	// be set when Stdin, Stdout and Stderr are the same terminal, usually the
@@ -244,13 +246,16 @@ type Exec struct {
 }
 
 // nsenterArgs is the fixed part of the nsenter(1) command line. The working
-// directory is set inside the container with --wdns so that it cannot point
+// directory is set inside the container with --wdns, so that it cannot point
 // outside of the new root.
-func nsenterArgs(pid int) []string {
+func nsenterArgs(pid int, dir string) []string {
+	if dir == "" {
+		dir = "/"
+	}
 	return []string{
 		"--target", strconv.Itoa(pid),
 		"--mount", "--uts", "--ipc", "--net", "--pid",
-		"--root", "--wdns=/",
+		"--root", "--wdns=" + dir,
 		"--",
 	}
 }
@@ -305,7 +310,7 @@ func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, e
 	if err != nil {
 		return nil, err
 	}
-	args := append(nsenterArgs(pid), e.Argv...)
+	args := append(nsenterArgs(pid, e.Dir), e.Argv...)
 	cmd := exec.CommandContext(ctx, "nsenter", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
 	if len(e.Env) > 0 {

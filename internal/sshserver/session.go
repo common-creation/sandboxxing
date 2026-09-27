@@ -286,6 +286,11 @@ func (s *sessionRequest) ptyEnabled() bool {
 	return s.pty
 }
 
+// enterAs is the account a container login starts as. Every container name is
+// a user name at the SSH level, and the container side is always entered as
+// root.
+const enterAs = "root"
+
 // runContainer turns the session into a login inside the named container.
 // The name may carry a DNS style suffix, which `User %n` in ssh_config
 // produces when a host alias such as demo.sbx is used.
@@ -319,8 +324,17 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 	// terminal description.
 	env := session.environment()
 
+	// The login starts in the home directory of root instead of the container
+	// root. HOME is looked up inside the container, and the working directory
+	// is set with it because a login shell does not change directory on its
+	// own. The lookup falls back to "/" when the directory does not exist,
+	// because nsenter refuses to start in a missing directory.
+	home := s.vms.HomeDir(ctx, name, enterAs, "/root")
+	env = append(env, "HOME="+home)
+	dir := home
+
 	if usePTY {
-		code, err := s.runPTY(ctx, name, argv, env, ch, session)
+		code, err := s.runPTY(ctx, name, argv, env, dir, ch, session)
 		if err != nil {
 			s.fail(ch, err)
 			return
@@ -328,7 +342,7 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 		s.exitStatus(ch, code)
 		return
 	}
-	s.runPipe(ctx, name, argv, env, ch)
+	s.runPipe(ctx, name, argv, env, dir, ch)
 }
 
 // notFoundError reports an unknown container name with a friendly hint.

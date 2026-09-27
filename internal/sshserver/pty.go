@@ -20,7 +20,7 @@ import (
 // the host, so that the pts node is resolvable inside the container and
 // programs such as `tty` work. The master therefore carries the data and the
 // slave is handed to the process that runs in the container.
-func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, ch ssh.Channel, session *sessionRequest) (int, error) {
+func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, dir string, ch ssh.Channel, session *sessionRequest) (int, error) {
 	term, err := s.vms.Terminal(ctx, name)
 	if err != nil {
 		return 1, err
@@ -48,6 +48,7 @@ func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, ch
 	cmd, err := s.vms.StartProcess(ctx, name, vm.Exec{
 		Argv:   argv,
 		Env:    env,
+		Dir:    dir,
 		Stdin:  term.Slave,
 		Stdout: term.Slave,
 		Stderr: term.Slave,
@@ -102,7 +103,7 @@ func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, ch
 
 // runPipe runs a command without a terminal and forwards the standard streams
 // through pipes so that stdout and stderr remain separated.
-func (s *Server) runPipe(ctx context.Context, name string, argv, env []string, ch ssh.Channel) {
+func (s *Server) runPipe(ctx context.Context, name string, argv, env []string, dir string, ch ssh.Channel) {
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		s.fail(ch, err)
@@ -127,7 +128,7 @@ func (s *Server) runPipe(ctx context.Context, name string, argv, env []string, c
 
 	exit := make(chan int, 1)
 	go func() {
-		code, err := s.vms.Run(ctx, name, vm.Exec{Argv: argv, Env: env, Stdin: inR, Stdout: outW, Stderr: errW})
+		code, err := s.vms.Run(ctx, name, vm.Exec{Argv: argv, Env: env, Dir: dir, Stdin: inR, Stdout: outW, Stderr: errW})
 		outW.Close()
 		errW.Close()
 		inR.Close()
