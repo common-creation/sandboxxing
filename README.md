@@ -1,8 +1,10 @@
 # sandboxxing
 
-`exe.dev` のような開発用サンドボックスを、自分のホスト上で **systemd-nspawn**
-を使って提供するデーモンです。クライアントアプリは不要で、操作はすべて
-**SSH プロトコル**の上に実装されています。
+日本語版は [README.ja.md](./README.ja.md)
+
+A daemon that provides development sandboxes like `exe.dev` on your own host
+using **systemd-nspawn**. No client application is required; every operation is
+implemented on top of the **SSH protocol**.
 
 ```
 [user@client]$ ssh sandbox@host -p 2222 ls
@@ -12,52 +14,55 @@ demo@host's password:
 [root@demo /]#
 ```
 
-## 特徴
+## Features
 
-- **SSH がすべてのインタフェース**。専用クライアントも HTTP API もない。
-- 制御ユーザー (`admin_users`、既定 `["sandbox","admin"]`) は管理コマンドを
-  実行できる。名前は `config.json` で自由に変更・追加・削除できる。
-- それ以外のユーザー名は **コンテナ名**として扱われ、`ssh <name>@host` が
-  そのままコンテナへのログインになる(`ssh <name>@domain`)。
-- バックエンドは **systemd-nspawn**、イメージは **Arch Linux**。
-- イメージのビルドに **arch-install-scripts** の `pacstrap` を使用する。
-- 独立したホストシステムでの運用を前提とし、そのホスト上の nspawn
-  コンテナはすべて sandboxxing のものとして扱う。
-- デーモンは **Go** で実装(`golang.org/x/crypto/ssh` による SSH サーバー)。
+- **SSH is the only interface**. There is no dedicated client and no HTTP API.
+- Control users (`admin_users`, default `["sandbox","admin"]`) can run
+  administrative commands. You can freely rename, add, or remove them in
+  `config.json`.
+- Any other username is treated as a **container name**, so `ssh <name>@host`
+  logs you straight into that container (`ssh <name>@domain`).
+- The backend is **systemd-nspawn** and images are **Arch Linux**.
+- Images are built with `pacstrap` from **arch-install-scripts**.
+- It is designed to run on a dedicated host system: every nspawn container on
+  that host is considered to belong to sandboxxing.
+- The daemon is written in **Go** (SSH server powered by
+  `golang.org/x/crypto/ssh`).
 
-## 必要な環境
+## Requirements
 
-- Arch Linux ホスト(systemd で起動していること)
-  - その他のLinuxディストーション（ Ubuntu など）は pacstrap が提供されていても動作未確認
-- root 権限
-- 次のパッケージ:
+- An Arch Linux host (booted with systemd)
+  - Other Linux distributions (e.g. Ubuntu) are untested even if they provide
+    pacstrap
+- root privileges
+- The following packages:
 
 ```bash
 pacman -S --needed arch-install-scripts systemd e2fsprogs nftables iproute2 util-linux
 ```
 
-| パッケージ            | 用途                                    |
-| --------------------- | --------------------------------------- |
-| `arch-install-scripts`| `pacstrap` によるイメージ作成           |
+| Package               | Purpose                                     |
+| --------------------- | ------------------------------------------- |
+| `arch-install-scripts`| Image creation via `pacstrap`               |
 | `systemd`             | `systemd-nspawn`, `machinectl`, `systemctl` |
-| `e2fsprogs`           | `mke2fs`, `e2fsck`, `resize2fs`         |
-| `nftables`            | コンテナ用の NAT                        |
-| `iproute2`            | bridge の作成                           |
-| `util-linux`          | `nsenter`, `setpriv`                    |
+| `e2fsprogs`           | `mke2fs`, `e2fsck`, `resize2fs`             |
+| `nftables`            | NAT for containers                          |
+| `iproute2`            | bridge creation                             |
+| `util-linux`          | `nsenter`, `setpriv`                        |
 
-> **注意**: `arch-install-scripts` はイメージのビルドに必須です。
-> 本プロジェクトは `pacstrap` がインストールされている前提で動作します。
+> **Note**: `arch-install-scripts` is required to build images.
+> This project assumes that `pacstrap` is installed.
 
-## ビルドとインストール
+## Build and Install
 
 ```bash
 git clone https://github.com/common-creation/sandboxxing
 cd sandboxxing
-make build            # bin/sandboxxing ができる
-sudo make install     # /usr/local/bin と systemd unit を配置
+make build            # produces bin/sandboxxing
+sudo make install     # installs to /usr/local/bin and the systemd unit
 ```
 
-手動で行う場合:
+To do it manually:
 
 ```bash
 go build -o bin/sandboxxing ./cmd/sandboxxing
@@ -65,9 +70,9 @@ sudo install -Dm755 bin/sandboxxing /usr/local/bin/sandboxxing
 sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sandboxxing.service
 ```
 
-## セットアップ
+## Setup
 
-1. 設定を確認する / 作る:
+1. Review or create the configuration:
 
    ```bash
    sudo install -d /etc/sandboxxing
@@ -75,13 +80,13 @@ sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sa
    sudoedit /etc/sandboxxing/config.json
    ```
 
-2. ホストの前提を検証する:
+2. Verify the host prerequisites:
 
    ```bash
    sudo sandboxxing -check
    ```
 
-3. サービスを開始する:
+3. Start the service:
 
    ```bash
    sudo systemctl daemon-reload
@@ -89,27 +94,28 @@ sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sa
    sudo journalctl -u sandboxxing -f
    ```
 
-4. 認証方法を決める:
+4. Choose an authentication method:
 
-   `config.json` の `password` と `authorized_keys` で認証方法を選びます。
-   どちらか一方は必ず有効にしてください(両方無効は起動時にエラーになります)。
+   Use `password` and `authorized_keys` in `config.json` to select an
+   authentication method. At least one of them must be enabled (if both are
+   disabled, startup fails with an error).
 
-   | 設定 | 動作 |
+   | Setting | Behavior |
    | --- | --- |
-   | `password` 省略 または 文字列 | パスワード認証を有効化。空文字なら初回起動時に自動生成し `password_file` に保存 |
-   | `password: null` | **パスワード認証を完全に無効化**(サーバーが `password` を広告しない) |
-   | `authorized_keys` 省略 | `<data_dir>/authorized_keys` を使用(ファイルが無ければ公開鍵認証は無効) |
-   | `authorized_keys: "/path/to/keys"` | 指定したファイルを使用。**ファイルが無ければ起動エラー**(typo で締め出されないように) |
-   | `authorized_keys: null` | 公開鍵認証を無効化 |
+   | `password` omitted or a string | Enables password authentication. If it is an empty string, a password is generated automatically on first start and saved to `password_file` |
+   | `password: null` | **Disables password authentication completely** (the server does not advertise `password`) |
+   | `authorized_keys` omitted | Uses `<data_dir>/authorized_keys` (public key authentication is disabled if the file does not exist) |
+   | `authorized_keys: "/path/to/keys"` | Uses the specified file. **Startup fails if the file does not exist** (so a typo cannot lock you out) |
+   | `authorized_keys: null` | Disables public key authentication |
 
-   パスワードを確認する:
+   To check the password:
 
    ```bash
    sudo sandboxxing -show-password
-   # あるいは: sudo cat /var/lib/sandboxxing/password
+   # or: sudo cat /var/lib/sandboxxing/password
    ```
 
-   **公開鍵認証の例**(パスワード認証を無効にする場合):
+   **Public key authentication example** (with password authentication disabled):
 
    ```bash
    sudo install -d -m 700 /etc/sandboxxing/keys
@@ -124,14 +130,15 @@ sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sa
    }
    ```
 
-   これで `ssh -i ~/.ssh/id_ed25519 -p 2222 sandbox@host ls` のように
-   鍵だけで接続できます。`authorized_keys` は sshd(8) と同じ形式です。
+   You can now connect using only the key, e.g.
+   `ssh -i ~/.ssh/id_ed25519 -p 2222 sandbox@host ls`. `authorized_keys` uses
+   the same format as sshd(8).
 
-5. 制御ユーザー名を決める:
+5. Decide the control usernames:
 
-   管理コマンド(`ls`, `new`, `rm` など)を実行できるユーザー名を
-   `admin_users` に列挙します。**`sandbox` という名前は既定値にすぎず、
-   自由に変更できます。**
+   List the usernames that are allowed to run administrative commands
+   (`ls`, `new`, `rm`, etc.) in `admin_users`. **The name `sandbox` is just a
+   default and can be changed freely.**
 
    ```json
    {
@@ -139,44 +146,45 @@ sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sa
    }
    ```
 
-   - 制御ユーザーはこのリストの名前だけです。`admin` を消したい場合は
-     配列から削除してください(1 つ以上の名前が必要です)。
-   - リストに無いユーザー名は**コンテナ名**として扱われます。
-   - コンテナ名として使う予定の名前をここに書かないでください。
-   - `~/.ssh/config` の `User` も合わせて変更してください。
+   - The control users are only the names in this list. If you want to remove
+     `admin`, delete it from the array (at least one name is required).
+   - Usernames not in the list are treated as **container names**.
+   - Do not put a name here that you intend to use as a container name.
+   - Update `User` in `~/.ssh/config` accordingly.
 
    ```bash
-   # 変更後の例: 制御ユーザーを "ops" にする
+   # Example after the change: make "ops" the control user
    sudoedit /etc/sandboxxing/config.json   # "admin_users": ["ops"]
    sudo systemctl restart sandboxxing
    ssh -p 2222 ops@<host> ls
    ```
 
-## サーバーへ SSH するための設定
+## Configuring SSH to the server
 
-デーモンは 1 つのポート(`ssh_addr`、既定では `:2222`)で待ち受けます。
-OpenSSH クライアントから使うには、`~/.ssh/config` に 1 つエントリを足すだけです:
+The daemon listens on a single port (`ssh_addr`, `:2222` by default). To use it
+from an OpenSSH client, just add one entry to `~/.ssh/config`:
 
 ```
 Host sandbox
-    HostName <ホスト名または IP>
+    HostName <hostname or IP>
     Port 2222
     User sandbox
 ```
 
-これで次のように使えます:
+Then you can use it like this:
 
 ```bash
 ssh sandbox ls
 ssh sandbox new --name=demo
-ssh demo@sandbox          # コンテナ demo にログイン
+ssh demo@sandbox          # log in to the container "demo"
 ```
 
-### コンテナ名のエイリアス (`ssh name@domain`)
+### Container name aliases (`ssh name@domain`)
 
-コンテナへ直接ログインするには `ssh <name>@<host> -p 2222` が使えます。
-さらに `ssh <name>@domain` の形で**コンテナ名をホスト名として**使いたい
-場合は、`ssh-config` コマンドが生成する設定をインストールします:
+To log in to a container directly, `ssh <name>@<host> -p 2222` works. If you
+also want to use **the container name as a hostname** in the form
+`ssh <name>@domain`, install the configuration generated by the `ssh-config`
+command:
 
 ```bash
 ssh sandbox@<host> -p 2222 ssh-config | sudo tee /etc/ssh/ssh_config.d/99-sandboxxing.conf
@@ -184,41 +192,41 @@ ssh sandbox@<host> -p 2222 ssh-config | sudo tee /etc/ssh/ssh_config.d/99-sandbo
 
 ```
 Host *.<domain>
-    HostName <ホスト名または IP>
+    HostName <hostname or IP>
     Port 2222
     User %n
 ```
 
-この設定では `demo.<domain>` のようなホスト名を指定すると、sandboxxing が
-`User %n`(ホスト名全体)を受け取り、最初のドットより前をコンテナ名として
-扱います:
+With this configuration, when you specify a hostname such as `demo.<domain>`,
+sandboxxing receives `User %n` (the full hostname) and treats the part before
+the first dot as the container name:
 
 ```bash
-ssh demo.example.com        # コンテナ demo にログイン
-ssh web.example.com uptime  # コンテナ web でコマンドを実行
+ssh demo.example.com        # log in to the container "demo"
+ssh web.example.com uptime  # run a command in the container "web"
 ```
 
-ドメイン部分は任意で、`User` がコンテナ名のまま渡れば `ssh demo@host`
-形式も同じ経路を通ります。
+The domain part is optional; if `User` is passed as the container name itself,
+the `ssh demo@host` form goes through the same path.
 
-> `Host *.<domain>` の `<domain>` は実際のドメイン名(例: `example.com`)
-> に置き換えてください。ワイルドカードを広くしすぎると、通常の SSH
-> 接続にもマッチするため注意してください。
+> Replace `<domain>` in `Host *.<domain>` with your actual domain name (e.g.
+> `example.com`). Be careful not to make the wildcard too broad, as it will
+> also match ordinary SSH connections.
 
-## コマンド
+## Commands
 
-すべて `ssh sandbox@host -p 2222 <command>` の形で実行します。
+All commands are run as `ssh sandbox@host -p 2222 <command>`.
 
-### `ls` — 一覧
+### `ls` — list
 
 ```
 ls [-l] [--group=tag|type] [--json] [name|pattern]
 ```
 
-- `--group`: `none`(既定) / `tag` / `type`。`region` は単一ホスト構成のため
-  エラーになります。
-- `-l`: 詳細情報も表示します。
-- パターンは `*` と `?` が使えます。
+- `--group`: `none` (default) / `tag` / `type`. `region` results in an error
+  because this is a single-host setup.
+- `-l`: also show detailed information.
+- Patterns support `*` and `?`.
 
 ```
 $ ssh sandbox ls
@@ -226,7 +234,7 @@ NAME   STATUS   IMAGE   IP           SSH
 demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 ```
 
-### `new` — 作成
+### `new` — create
 
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
@@ -234,11 +242,11 @@ new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
     [--prompt=TEXT] [--json]
 ```
 
-- 名前を省略すると `sbx-xxxxxx` が自動生成されます。
-- 作成後すぐに起動し、IP アドレスが割り当てられます。
-- `--setup-script` は初回にコンテナ内で実行するスクリプトです。
-  `/dev/stdin` を指定すると標準入力から読み込みます。
-- `--prompt` は作成直後にコンテナへ流し込む初期コマンドです。
+- If the name is omitted, `sbx-xxxxxx` is generated automatically.
+- The container starts immediately after creation and is assigned an IP address.
+- `--setup-script` is a script executed inside the container on first boot.
+  Specify `/dev/stdin` to read it from standard input.
+- `--prompt` is an initial command fed into the container right after creation.
 
 ```
 $ ssh sandbox new --cpu=4 --memory=16GB --tag=prod,web
@@ -253,96 +261,96 @@ ready: ssh web@host -p 2222
 $ echo 'pacman -S --noconfirm go' | ssh sandbox new --setup-script=/dev/stdin
 ```
 
-#### 進捗出力
+#### Progress output
 
-`new` や `cp` のように時間のかかるコマンドは、処理の進み具合と、その処理が
-起動するコマンド(`pacstrap`, `mke2fs`, `systemd-nspawn` など)の出力を
-**そのまま SSH クライアントの stderr へ転送**します。キャンセル(Ctrl-C)や
-接続断で処理を中断できます。
+Long-running commands such as `new` and `cp` forward the progress of the
+operation and the output of the commands they invoke (`pacstrap`, `mke2fs`,
+`systemd-nspawn`, etc.) **as-is to the SSH client's stderr**. You can abort the
+operation with Ctrl-C or by disconnecting.
 
-処理結果(コンテナ名など)だけが stdout に届くため、スクリプトからは次の
-ように名前を取り出せます:
+Only the result (such as the container name) is sent to stdout, so scripts can
+extract the name like this:
 
 ```bash
-name=$(ssh sandbox new --cpu=2)   # stdout は名前だけ
+name=$(ssh sandbox new --cpu=2)   # stdout is only the name
 ssh "$name@host" -p 2222
 ```
 
-### `rm` — 削除
+### `rm` — remove
 
 ```
 rm <name>...
 ```
 
-### `restart` — 再起動
+### `restart` — restart
 
 ```
 restart <name>
 ```
 
-### `cp` — 複製
+### `cp` — copy
 
 ```
 cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--json]
 ```
 
-- 実行中のコンテナを複製することもできます(ディスクイメージをコピー)。
-- `--copy-tags` は既定で有効です。無効にする場合は `--copy-tags=false`。
+- You can also copy a running container (the disk image is copied).
+- `--copy-tags` is enabled by default. Use `--copy-tags=false` to disable it.
 
-### `resize` — リソース変更
+### `resize` — change resources
 
 ```
 resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
 ```
 
-- CPU とメモリは systemd の transient unit プロパティ (`CPUQuota`,
-  `MemoryMax`) として即時反映されます。
-- ディスクは縮小できません。拡張はコンテナを停止し、`e2fsck` と
-  `resize2fs` でイメージ内のファイルシステムを成長させます。
+- CPU and memory take effect immediately as systemd transient unit properties
+  (`CPUQuota`, `MemoryMax`).
+- Disks cannot be shrunk. Growing stops the container and expands the
+  filesystem inside the image with `e2fsck` and `resize2fs`.
 
-### `stat` — 状態と使用量
+### `stat` — status and usage
 
 ```
 stat <name> [--range=24h|7d|30d] [--json]
 ```
 
-稼働状況、リソース上限、cgroup から取得した現在の使用量を表示します。
-`--range` は互換性のために受け付けますが、sandboxxing は履歴メトリクスを
-保持しません(値は常に現在のサンプルです)。
+Shows the running state, resource limits, and current usage collected from
+cgroups. `--range` is accepted for compatibility, but sandboxxing does not
+keep historical metrics (the value is always the current sample).
 
-### `ssh` — コンテナ内でコマンド実行
+### `ssh` — run a command in a container
 
-制御セッションからコンテナ内のコマンドを実行します:
+Run a command inside a container from a control session:
 
 ```bash
-ssh sandbox -p 2222 ssh demo        # demo にログイン
-ssh sandbox -p 2222 ssh demo uptime # 1 コマンドだけ実行
+ssh sandbox -p 2222 ssh demo        # log in to demo
+ssh sandbox -p 2222 ssh demo uptime # run a single command
 ssh sandbox -p 2222 ssh -l app demo id
 ```
 
-### その他
+### Others
 
-- `images` — キャッシュ済みベースイメージの一覧
-- `ssh-config` — ssh_config のスニペットを出力
-- `billing plan` — このホストの CPU / メモリ / ディスクの容量
-- `host-check` — ホストの前提条件チェック
-- `help` — コマンド一覧
+- `images` — list cached base images
+- `ssh-config` — print an ssh_config snippet
+- `billing plan` — CPU / memory / disk capacity of this host
+- `host-check` — check host prerequisites
+- `help` — list commands
 
-## コンテナ内への直接ログイン
+## Logging Directly into a Container
 
 ```
-ssh <name>@<host> -p 2222             # 対話シェル
-ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
+ssh <name>@<host> -p 2222             # interactive shell
+ssh <name>@<host> -p 2222 uname -a    # run a single command
 ```
 
-- 停止しているコンテナは**オンデマンドで起動**してからログインします。
-- TTY を要求した場合は PTY 経由で対話できます（ジョブ制御・ウィンドウ
-  サイズ変更対応）。TTY がない場合は
-  stdout/stderr が分離されたままストリームされます。
-- コンテナ内の `sshd` は使いません。ホスト側の `nsenter` で
-  namespaces に入るため、コンテナは起動していれば十分です。
+- Stopped containers are **started on demand** before login.
+- If a TTY is requested, you get an interactive session over a PTY (job
+  control and window resizing supported). Without a TTY, stdout/stderr are
+  streamed separately.
+- The container's own `sshd` is not used. The host's `nsenter` enters the
+  namespaces, so the container only needs to be running.
 
-## アーキテクチャ
+## Architecture
 
 ```
              ssh sandbox@host:2222 ls
@@ -352,74 +360,74 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
              │  sandboxxing   │  Go / x/crypto/ssh
              │    daemon      │
              └───┬───────┬────┘
-    管理コマンド │       │ nsenter(1)
+  admin commands │       │ nsenter(1)
                  ▼       ▼
         ┌────────────┐  ┌───────────────────────────┐
-        │ pacstrap   │  │ systemd-nspawn コンテナ   │
-        │ イメージ   │  │  (Arch Linux, ext4 image) │
+        │ pacstrap   │  │ systemd-nspawn container  │
+        │  images    │  │  (Arch Linux, ext4 image) │
         └────────────┘  └───────────────────────────┘
                  │              │
                  ▼              ▼
         /var/lib/sandboxxing/  bridge sbx0 + nft NAT
 ```
 
-- **コンテナの実体**: `systemd-nspawn --image=<name>.img`。ディスク
-  イメージは `pacstrap` で作った rootfs から `mke2fs -d` で作成します。
-- **起動**: `systemd-run` による transient unit (`sandboxxing-<name>`)。
-  `MemoryMax` と `CPUQuota` でリソースを制限します。
-- **ネットワーク**: ホストに bridge (`sbx0`) を作成し、コンテナ側は
-  `--network-veth --network-bridge` で接続。nftables で masquerade します。
-  コンテナの IP は sandboxxing が静止割り当てします。
-- **コマンド実行**: `nsenter --target <leader> --mount --uts --ipc --net --pid
-  --root --wdns=/`。PTY はコンテナ自身の `/dev/ptmx` から確保するため、
-  コンテナ内の `/dev/pts/<n>` として見え、`tty` や `ttyname(3)` が
-  正常に動作します。
-- **状態**: `/var/lib/sandboxxing/state.json` にコンテナのメタデータを保存。
+- **Container backing**: `systemd-nspawn --image=<name>.img`. Disk images are
+  created from the rootfs built by `pacstrap` using `mke2fs -d`.
+- **Startup**: transient units via `systemd-run` (`sandboxxing-<name>`).
+  Resources are limited with `MemoryMax` and `CPUQuota`.
+- **Networking**: a bridge (`sbx0`) is created on the host and containers
+  attach to it with `--network-veth --network-bridge`. Masquerading is done
+  with nftables. Container IPs are statically assigned by sandboxxing.
+- **Command execution**: `nsenter --target <leader> --mount --uts --ipc --net
+  --pid --root --wdns=/`. The PTY is allocated from the container's own
+  `/dev/ptmx`, so it appears as `/dev/pts/<n>` inside the container and `tty`
+  and `ttyname(3)` work correctly.
+- **State**: container metadata is stored in `/var/lib/sandboxxing/state.json`.
 
-## 設定リファレンス (`/etc/sandboxxing/config.json`)
+## Configuration Reference (`/etc/sandboxxing/config.json`)
 
-| キー | 既定値 | 説明 |
+| Key | Default | Description |
 | --- | --- | --- |
-| `data_dir` | `/var/lib/sandboxxing` | データのルート |
-| `state_file` | `<data_dir>/state.json` | コンテナメタデータ |
-| `ssh_addr` | `:2222` | SSH の待ち受けアドレス |
-| `domain` | (空) | `ls` などに表示するホスト名 |
-| `admin_users` | `["sandbox","admin"]` | 制御コマンドを許可するユーザー名 |
-| `password` | (空) | 共有パスワード。省略/文字列で有効、空なら自動生成、**null で無効化** |
-| `password_file` | `<data_dir>/password` | 自動生成パスワードの保存先 |
-| `authorized_keys` | `<data_dir>/authorized_keys` | 公開鍵ファイル。省略で既定パス、**null で無効化**、指定して不在なら起動エラー |
-| `bridge` | `sbx0` | コンテナ用ブリッジ |
-| `subnet` | `10.100.0.0/16` | コンテナ用サブネット(/24 以上) |
-| `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
-| `image` | `arch` | 既定イメージ名 |
-| `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
-| `arch` | 自動判定 | pacstrap のアーキテクチャ |
-| `pacman_config` | (空) | 独自 pacman.conf(空なら生成) |
-| `image_packages` | `base systemd openssh sudo vim iproute2 iputils dnsutils net-tools git curl ca-certificates` | イメージに追加するパッケージ |
-| `pacstrap_timeout` | `30m` | イメージビルドの上限時間 |
-| `boot_timeout` | `2m` | コンテナ起動待ちの上限 |
-| `default_cpu` | `2` | `new` の既定 CPU |
-| `default_memory` | `2G` | `new` の既定メモリ |
-| `default_disk` | `10G` | `new` の既定ディスク |
+| `data_dir` | `/var/lib/sandboxxing` | Root of the data directory |
+| `state_file` | `<data_dir>/state.json` | Container metadata |
+| `ssh_addr` | `:2222` | Listen address for SSH |
+| `domain` | (empty) | Hostname shown in `ls`, etc. |
+| `admin_users` | `["sandbox","admin"]` | Usernames allowed to run control commands |
+| `password` | (empty) | Shared password. Enabled when omitted or a string, auto-generated when empty, **disabled with null** |
+| `password_file` | `<data_dir>/password` | Where the auto-generated password is stored |
+| `authorized_keys` | `<data_dir>/authorized_keys` | Public key file. Omitted uses the default path, **null disables it**, and a specified path that does not exist causes a startup error |
+| `bridge` | `sbx0` | Bridge for containers |
+| `subnet` | `10.100.0.0/16` | Subnet for containers (/24 or larger) |
+| `image_dir` | `<data_dir>/images` | Cache of pacstrap trees (converted to ext4 images on `new`) |
+| `image` | `arch` | Default image name |
+| `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
+| `arch` | auto-detected | Architecture for pacstrap |
+| `pacman_config` | (empty) | Custom pacman.conf (generated when empty) |
+| `image_packages` | `base systemd openssh sudo vim iproute2 iputils dnsutils net-tools git curl ca-certificates` | Packages added to the image |
+| `pacstrap_timeout` | `30m` | Time limit for image builds |
+| `boot_timeout` | `2m` | Time limit for waiting for container startup |
+| `default_cpu` | `2` | Default CPU for `new` |
+| `default_memory` | `2G` | Default memory for `new` |
+| `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
 
-## セキュリティ上の注意
+## Security Notes
 
-- デーモンは **root で動作**し、`ssh_addr` は既定で全インタフェースに
-  バインドします。インターネットに直接公開せず、SSH ポートの転送や
-  VPN、ファイアウォールの背後で使ってください。
-- コンテナは user namespace を使わずに起動します(`-U` を付けません)。
-  ホスト側の分離は nspawn の namespaces と cgroups に依存します。
-  信頼できないワークロードを動かす場合は、追加の分離設定を検討して
-  ください。
-- コンテナ名はユーザー名として使われるため、`admin_users` と同じ名前の
-  コンテナは作成できません。
-- **公開鍵認証を推奨します**。パスワードは `admin_users` とコンテナ名の
-  両方で共通の単一シークレットなので、漏洩すると全コンテナに影響します。
-  `password: null` + `authorized_keys` の指定でパスワード認証を止められます。
-- `authorized_keys` は sshd(8) と同じ形式です。`no-pty` や
-  `command=` などのオプションは解釈されず、鍵の部分だけが使われます。
+- The daemon runs as **root** and `ssh_addr` binds to all interfaces by
+  default. Do not expose it directly to the internet; use it behind SSH port
+  forwarding, a VPN, or a firewall.
+- Containers run without a user namespace (`-U` is not used). Host isolation
+  relies on nspawn namespaces and cgroups. If you run untrusted workloads,
+  consider additional isolation.
+- Container names are used as usernames, so you cannot create a container with
+  the same name as one in `admin_users`.
+- **Public key authentication is recommended**. The password is a single
+  shared secret for both `admin_users` and container names, so a leak affects
+  every container. You can disable password authentication with
+  `password: null` plus an `authorized_keys` setting.
+- `authorized_keys` uses the same format as sshd(8). Options such as `no-pty`
+  and `command=` are not interpreted; only the key part is used.
 
-## ライセンス
+## License
 
 MIT
