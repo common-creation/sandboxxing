@@ -19,6 +19,7 @@ import (
 	"github.com/common-creation/sandboxxing/internal/process"
 	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
+	"github.com/common-creation/sandboxxing/internal/tty"
 )
 
 // Machine is the unit name prefix used by systemd-run.
@@ -196,8 +197,10 @@ type Exec struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
-	// PTY requests a controlling terminal for the command. It must only be
-	// set when Stdin, Stdout and Stderr are the same terminal.
+	// PTY makes the command the session leader with the given terminal as its
+	// controlling terminal, which is what enables job control. It must only
+	// be set when Stdin, Stdout and Stderr are the same terminal, usually the
+	// slave of a terminal from Nspawn.Terminal.
 	PTY bool
 }
 
@@ -231,6 +234,17 @@ func (n *Nspawn) Run(ctx context.Context, name string, e Exec) (int, error) {
 		return 1, fmt.Errorf("enter container %s: %w", name, err)
 	}
 	return 0, nil
+}
+
+// Terminal allocates a pseudo terminal from the container's own devpts
+// instance. The slave appears as /dev/pts/<n> inside the container, which is
+// what makes ttyname(3) and the `tty` command work.
+func (n *Nspawn) Terminal(ctx context.Context, name string) (*tty.Terminal, error) {
+	pid, err := n.Leader(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return tty.Open(pid)
 }
 
 // StartProcess starts a command inside the container and returns the running

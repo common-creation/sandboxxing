@@ -22,6 +22,7 @@ import (
 	"github.com/common-creation/sandboxxing/internal/process"
 	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
+	"github.com/common-creation/sandboxxing/internal/tty"
 )
 
 // Manager implements all container operations.
@@ -461,6 +462,15 @@ func (m *Manager) StartProcess(ctx context.Context, name string, e backend.Exec)
 		return nil, err
 	}
 	return m.backend.StartProcess(ctx, name, e)
+}
+
+// Terminal allocates a pseudo terminal from the container's devpts instance,
+// so that the terminal is resolvable inside the container.
+func (m *Manager) Terminal(ctx context.Context, name string) (*tty.Terminal, error) {
+	if err := m.EnsureStarted(ctx, name); err != nil {
+		return nil, err
+	}
+	return m.backend.Terminal(ctx, name)
 }
 
 // Images lists the cached base images.

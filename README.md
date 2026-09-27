@@ -305,7 +305,8 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 ```
 
 - 停止しているコンテナは**オンデマンドで起動**してからログインします。
-- TTY を要求した場合は PTY 経由で対話できます。TTY がない場合は
+- TTY を要求した場合は PTY 経由で対話できます（ジョブ制御・ウィンドウ
+  サイズ変更対応）。TTY がない場合は
   stdout/stderr が分離されたままストリームされます。
 - コンテナ内の `sshd` は使いません。ホスト側の `nsenter` で
   namespaces に入るため、コンテナは起動していれば十分です。
@@ -339,7 +340,9 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
   `--network-veth --network-bridge` で接続。nftables で masquerade します。
   コンテナの IP は sandboxxing が静止割り当てします。
 - **コマンド実行**: `nsenter --target <leader> --mount --uts --ipc --net --pid
-  --root --wdns=/`。PTY はホスト側で確保します。
+  --root --wdns=/`。PTY はコンテナ自身の `/dev/ptmx` から確保するため、
+  コンテナ内の `/dev/pts/<n>` として見え、`tty` や `ttyname(3)` が
+  正常に動作します。
 - **状態**: `/var/lib/sandboxxing/state.json` にコンテナのメタデータを保存。
 
 ## 設定リファレンス (`/etc/sandboxxing/config.json`)

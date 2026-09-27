@@ -8,65 +8,93 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/common-creation/sandboxxing/internal/vm"
 )
 
 // runPTY runs a command inside the container on a pseudo terminal and bridges
-// it to the SSH channel. The PTY is allocated on the host and passed to
-// nsenter(1), which places the already opened terminal inside the container.
+// it to the SSH channel.
+//
+// The terminal is allocated from the container's own devpts instance, not from
+// the host, so that the pts node is resolvable inside the container and
+// programs such as `tty` work. The master therefore carries the data and the
+// slave is handed to the process that runs in the container.
 func (s *Server) runPTY(ctx context.Context, name string, argv []string, ch ssh.Channel, session *sessionRequest) (int, error) {
-	ptmx, tty, err := pty.Open()
+	term, err := s.vms.Terminal(ctx, name)
 	if err != nil {
 		return 1, err
 	}
-	defer ptmx.Close()
+	defer term.Close()
+
 	rows, cols := session.size()
-	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)}); err != nil {
-		tty.Close()
+	if err := term.SetSize(rows, cols); err != nil {
 		return 1, err
 	}
+	// The descriptor is captured before the goroutines start so that they
+	// never read the field while Close clears it.
+	master := term.Master
 
 	resize := session.enableResize()
-	defer session.disableResize(resize)
+	resizeStopped := false
+	stopResize := func() {
+		if !resizeStopped {
+			resizeStopped = true
+			session.disableResize(resize)
+		}
+	}
+	defer stopResize()
 
 	cmd, err := s.vms.StartProcess(ctx, name, vm.Exec{
 		Argv:   argv,
-		Stdin:  tty,
-		Stdout: tty,
-		Stderr: tty,
+		Stdin:  term.Slave,
+		Stdout: term.Slave,
+		Stderr: term.Slave,
 		PTY:    true,
 	})
 	if err != nil {
-		tty.Close()
 		return 1, err
 	}
-	tty.Close()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
+	outputDone := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(ptmx, ch)
+		defer close(outputDone)
+		_, _ = io.Copy(ch, master)
+		// Tell the client that no more data follows. The exit status is sent
+		// separately, after this function returns.
+		_ = ch.CloseWrite()
 	}()
+
+	resizeDone := make(chan struct{})
 	go func() {
+		defer close(resizeDone)
 		for size := range resize {
-			_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(size.rows), Cols: uint16(size.cols)})
+			_ = term.SetSize(size.rows, size.cols)
 		}
 	}()
 
-	_, _ = io.Copy(ch, ptmx)
-	ptmx.Close()
-	wg.Wait()
+	// The input pump forwards keystrokes to the container. It is not awaited
+	// below: its read on the SSH channel only returns when the client closes
+	// it, and an SSH client is not required to do so after the shell exits.
+	go func() {
+		_, _ = io.Copy(master, ch)
+	}()
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	// Closing the container side releases the terminal: the output pump sees
+	// the end of file and the input pump fails on its next write.
+	_ = term.CloseSlave()
+	<-outputDone
+
+	stopResize()
+	<-resizeDone
+
+	if waitErr != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(waitErr, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		return 1, err
+		return 1, waitErr
 	}
 	return 0, nil
 }
@@ -135,9 +163,7 @@ func (s *Server) runPipe(ctx context.Context, name string, argv []string, ch ssh
 // stdio adapts an SSH channel to the io.Reader used by the interactive
 // console of the control sessions.
 type stdio struct {
-	ch   ssh.Channel
-	rows int
-	cols int
+	ch ssh.Channel
 }
 
 func (s *stdio) Read(p []byte) (int, error) { return s.ch.Read(p) }

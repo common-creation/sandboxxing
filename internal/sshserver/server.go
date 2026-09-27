@@ -159,6 +159,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	s.log.Info("session started", "user", sshConn.User(), "remote", sshConn.RemoteAddr().String())
 
 	go ssh.DiscardRequests(reqs)
+
+	var sessions sync.WaitGroup
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
 			newChannel.Reject(ssh.UnknownChannelType, "only session channels are supported")
@@ -168,8 +170,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 		if err != nil {
 			return err
 		}
-		s.handleSession(ctx, sshConn, channel, requests)
+		// Sessions run concurrently: a channel stays open for the whole
+		// login, and further channels (a second session, or an agent
+		// forward) must not be blocked behind it.
+		sessions.Add(1)
+		go func() {
+			defer sessions.Done()
+			s.handleSession(ctx, sshConn, channel, requests)
+		}()
 	}
+	sessions.Wait()
 	return nil
 }
 

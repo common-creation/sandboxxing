@@ -50,15 +50,16 @@ func (s *sessionRequest) enableResize() chan windowSize {
 	return ch
 }
 
-// disableResize stops resize forwarding.
+// disableResize stops resize forwarding. It is safe to call more than once
+// for the same channel.
 func (s *sessionRequest) disableResize(ch chan windowSize) {
 	s.mu.Lock()
 	if s.winsize == ch {
 		s.winsize = nil
 		s.ptyReady = false
+		close(ch)
 	}
 	s.mu.Unlock()
-	close(ch)
 }
 
 func (s *sessionRequest) setSize(rows, cols int) {
@@ -66,13 +67,15 @@ func (s *sessionRequest) setSize(rows, cols int) {
 	s.rows, s.cols = rows, cols
 	ch := s.winsize
 	ready := s.ptyReady
-	s.mu.Unlock()
 	if ch != nil && ready {
+		// The send happens under the same lock that guards the close in
+		// disableResize, so a resize can never race with the shutdown.
 		select {
 		case ch <- windowSize{rows: rows, cols: cols}:
 		default:
 		}
 	}
+	s.mu.Unlock()
 }
 
 // handleSession services one SSH session channel. Exactly one of exec, shell
@@ -146,14 +149,14 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, ch ssh
 				}
 				req.Reply(true, nil)
 				once.Do(func() { close(start) })
-				return
+				// The loop keeps running: window-change requests arrive
+				// after this message and must keep being handled.
 			case "shell":
 				session.mu.Lock()
 				session.shell = true
 				session.mu.Unlock()
 				req.Reply(true, nil)
 				once.Do(func() { close(start) })
-				return
 			case "subsystem":
 				var payload struct {
 					Name string
@@ -165,7 +168,6 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, ch ssh
 				}
 				req.Reply(false, nil)
 				once.Do(func() { close(start) })
-				return
 			default:
 				if req.WantReply {
 					req.Reply(false, nil)
