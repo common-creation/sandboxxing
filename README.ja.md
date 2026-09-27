@@ -390,6 +390,7 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `authorized_keys` | `<data_dir>/authorized_keys` | 公開鍵ファイル。省略で既定パス、**null で無効化**、指定して不在なら起動エラー |
 | `bridge` | `sbx0` | コンテナ用ブリッジ |
 | `subnet` | `10.100.0.0/16` | コンテナ用サブネット(/24 以上) |
+| `dns` | (空) | コンテナに書き込むリゾルバ。空ならホストの resolv.conf を流用(ホスト専用の `127.0.0.53` は除外) |
 | `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
 | `image` | `arch` | 既定イメージ名 |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
@@ -402,6 +403,25 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `default_memory` | `2G` | `new` の既定メモリ |
 | `default_disk` | `10G` | `new` の既定ディスク |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## コンテナ内の DNS
+
+コンテナは `systemd-resolved` を動かしません。デーモンが `/etc/resolv.conf`
+を直接書き込みます。`dns` が空の場合、ホストの `/etc/resolv.conf` を読み、
+**ホスト自身でしか応答できないアドレスを除外**します。これは
+`systemd-resolved` を動かしているホストで重要です。resolved のスタブ
+(`127.0.0.53`) はコンテナのネットワーク名前空間からは到達できないため、
+それを指定すると IP の疎通があっても名前解決だけが失敗します。
+
+自動選択が望ましくない場合は明示的に指定します:
+
+```json
+{
+  "dns": ["1.1.1.1", "8.8.8.8"]
+}
+```
+
+既存のコンテナも次回起動時に新しい設定を反映します。
 
 ## セキュリティ上の注意
 

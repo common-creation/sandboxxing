@@ -1,0 +1,11 @@
+sudo apt install -y arch-install-scripts e2fsprogs nftables iproute2 util-linux make pacman-package-manager systemd-container
+sudo snap install go --classic
+sudo pacman-key --init
+sudo pacman-key --populate archlinux
+
+# set `SigLevel = Optional` in pacman.conf
+sudo pacman -Sy archlinux-keyring
+# unset `SigLevel = Optional` in pacman.conf
+
+
+https://geo.mirror.pkgbuild.com/$repo/os/$arch

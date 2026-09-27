@@ -19,9 +19,13 @@ import (
 
 // NetConfigVersion is the version of the network configuration that
 // sandboxxing writes into a container. A container whose recorded version is
-// lower is reconfigured the next time it starts, which is how a fixed gateway
-// address reaches containers created by an older release.
-const NetConfigVersion = 2
+// lower is reconfigured the next time it starts, which is how fixes reach
+// containers created by an older release.
+//
+//	1: initial
+//	2: the gateway became the first usable address of the subnet
+//	3: /etc/resolv.conf no longer lists the host's loopback resolver
+const NetConfigVersion = 3
 
 // VM describes one sandbox container.
 type VM struct {

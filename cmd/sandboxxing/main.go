@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -258,7 +259,54 @@ func authChecks(cfg *config.Config) []hostCheck {
 		checks = append(checks, hostCheck{Name: "reachability", OK: false,
 			Detail: "every authentication method is disabled"})
 	}
+	checks = append(checks, dnsCheck(cfg))
 	return checks
+}
+
+// dnsCheck reports which resolvers the containers will use and warns when the
+// host resolver cannot be reached from them, which is the case for the
+// systemd-resolved stub on 127.0.0.53.
+func dnsCheck(cfg *config.Config) hostCheck {
+	if len(cfg.DNS) > 0 {
+		return hostCheck{Name: "container dns", OK: true,
+			Detail: "from the configuration: " + strings.Join(cfg.DNS, ", ")}
+	}
+	b, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return hostCheck{Name: "container dns", OK: true,
+			Detail: "host resolv.conf unreadable, public resolvers will be used"}
+	}
+	usable, skipped := splitResolvers(string(b))
+	switch {
+	case len(usable) > 0:
+		return hostCheck{Name: "container dns", OK: true,
+			Detail: "from the host: " + strings.Join(usable, ", ")}
+	case len(skipped) > 0:
+		return hostCheck{Name: "container dns", OK: false,
+			Detail: "the host only uses " + strings.Join(skipped, ", ") +
+				" which a container cannot reach; set \"dns\" in the configuration"}
+	default:
+		return hostCheck{Name: "container dns", OK: false,
+			Detail: "no nameserver found; set \"dns\" in the configuration"}
+	}
+}
+
+// splitResolvers separates the nameservers of a resolv.conf into the ones a
+// container can reach and the ones that only answer on the host itself, such
+// as systemd-resolved's 127.0.0.53 stub.
+func splitResolvers(contents string) (usable, skipped []string) {
+	for _, line := range strings.Split(contents, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		if ip := net.ParseIP(fields[1]); ip != nil && ip.IsLoopback() {
+			skipped = append(skipped, fields[1])
+			continue
+		}
+		usable = append(usable, fields[1])
+	}
+	return usable, skipped
 }
 
 func advertisedHost(cfg *config.Config) string {

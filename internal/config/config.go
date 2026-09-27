@@ -59,6 +59,11 @@ type Config struct {
 	// Subnet is the CIDR of the container network (the bridge address is the
 	// first usable address and is used as the default gateway).
 	Subnet string `json:"subnet"`
+	// DNS is the resolver list written into the containers. When empty the
+	// daemon reads /etc/resolv.conf of the host and drops the addresses of a
+	// resolver that only listens on the host itself (systemd-resolved's
+	// 127.0.0.53), because the container does not run that resolver.
+	DNS []string `json:"dns"`
 
 	// ImageDir is where built root file system images are cached.
 	ImageDir string `json:"image_dir"`
@@ -284,6 +289,11 @@ func (c *Config) Validate() error {
 	}
 	if c.BootTimeout <= 0 {
 		c.BootTimeout = Duration(2 * time.Minute)
+	}
+	for _, server := range c.DNS {
+		if net.ParseIP(server) == nil {
+			return fmt.Errorf("invalid dns entry %q: use an IP address", server)
+		}
 	}
 	switch c.LogLevel {
 	case "", "debug", "info", "warn", "error":

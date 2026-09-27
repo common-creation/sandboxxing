@@ -398,6 +398,7 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `authorized_keys` | `<data_dir>/authorized_keys` | Public key file. Omitted uses the default path, **null disables it**, and a specified path that does not exist causes a startup error |
 | `bridge` | `sbx0` | Bridge for containers |
 | `subnet` | `10.100.0.0/16` | Subnet for containers (/24 or larger) |
+| `dns` | (empty) | Resolvers written to the containers. Empty reuses the host resolvers, skipping ones that only run on the host (`127.0.0.53`) |
 | `image_dir` | `<data_dir>/images` | Cache of pacstrap trees (converted to ext4 images on `new`) |
 | `image` | `arch` | Default image name |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
@@ -410,6 +411,26 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `default_memory` | `2G` | Default memory for `new` |
 | `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## DNS inside the containers
+
+Containers do not run `systemd-resolved`; they get a plain `/etc/resolv.conf`
+written by the daemon. When `dns` is empty the host's `/etc/resolv.conf` is
+read and any address that only a resolver on the host can answer is dropped.
+This matters on hosts that run `systemd-resolved`, because its stub listener
+(`127.0.0.53`) cannot be reached from a container network namespace — using it
+would resolve nothing while raw IP connectivity still works.
+
+Configure the resolvers explicitly when the automatic selection is not what
+you want:
+
+```json
+{
+  "dns": ["1.1.1.1", "8.8.8.8"]
+}
+```
+
+Existing containers pick the setting up the next time they start.
 
 ## Security Notes
 
