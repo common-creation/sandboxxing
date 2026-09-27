@@ -86,15 +86,43 @@ sudo install -Dm644 packaging/systemd/sandboxxing.service /etc/systemd/system/sa
    sudo journalctl -u sandboxxing -f
    ```
 
-4. アクセス用パスワードを確認する:
+4. 認証方法を決める:
+
+   `config.json` の `password` と `authorized_keys` で認証方法を選びます。
+   どちらか一方は必ず有効にしてください(両方無効は起動時にエラーになります)。
+
+   | 設定 | 動作 |
+   | --- | --- |
+   | `password` 省略 または 文字列 | パスワード認証を有効化。空文字なら初回起動時に自動生成し `password_file` に保存 |
+   | `password: null` | **パスワード認証を完全に無効化**(サーバーが `password` を広告しない) |
+   | `authorized_keys` 省略 | `<data_dir>/authorized_keys` を使用(ファイルが無ければ公開鍵認証は無効) |
+   | `authorized_keys: "/path/to/keys"` | 指定したファイルを使用。**ファイルが無ければ起動エラー**(typo で締め出されないように) |
+   | `authorized_keys: null` | 公開鍵認証を無効化 |
+
+   パスワードを確認する:
 
    ```bash
    sudo sandboxxing -show-password
    # あるいは: sudo cat /var/lib/sandboxxing/password
    ```
 
-   パスワードは初回起動時に自動生成され、`password_file`
-  に保存されます。`config.json` の `password` を指定すればそちらが優先されます。
+   **公開鍵認証の例**(パスワード認証を無効にする場合):
+
+   ```bash
+   sudo install -d -m 700 /etc/sandboxxing/keys
+   sudo cp ~/.ssh/id_ed25519.pub /etc/sandboxxing/keys/authorized_keys
+   sudo chmod 600 /etc/sandboxxing/keys/authorized_keys
+   ```
+
+   ```json
+   {
+     "password": null,
+     "authorized_keys": "/etc/sandboxxing/keys/authorized_keys"
+   }
+   ```
+
+   これで `ssh -i ~/.ssh/id_ed25519 -p 2222 sandbox@host ls` のように
+   鍵だけで接続できます。`authorized_keys` は sshd(8) と同じ形式です。
 
 5. 制御ユーザー名を決める:
 
@@ -354,9 +382,9 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `ssh_addr` | `:2222` | SSH の待ち受けアドレス |
 | `domain` | (空) | `ls` などに表示するホスト名 |
 | `admin_users` | `["sandbox","admin"]` | 制御コマンドを許可するユーザー名 |
-| `password` | (空) | 共有パスワード(空なら自動生成) |
+| `password` | (空) | 共有パスワード。省略/文字列で有効、空なら自動生成、**null で無効化** |
 | `password_file` | `<data_dir>/password` | 自動生成パスワードの保存先 |
-| `authorized_keys_file` | `<data_dir>/authorized_keys` | 接続を許可する公開鍵(存在する場合のみ公開鍵認証を有効化) |
+| `authorized_keys` | `<data_dir>/authorized_keys` | 公開鍵ファイル。省略で既定パス、**null で無効化**、指定して不在なら起動エラー |
 | `bridge` | `sbx0` | コンテナ用ブリッジ |
 | `subnet` | `10.100.0.0/16` | コンテナ用サブネット(/24 以上) |
 | `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
@@ -383,6 +411,11 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
   ください。
 - コンテナ名はユーザー名として使われるため、`admin_users` と同じ名前の
   コンテナは作成できません。
+- **公開鍵認証を推奨します**。パスワードは `admin_users` とコンテナ名の
+  両方で共通の単一シークレットなので、漏洩すると全コンテナに影響します。
+  `password: null` + `authorized_keys` の指定でパスワード認証を止められます。
+- `authorized_keys` は sshd(8) と同じ形式です。`no-pty` や
+  `command=` などのオプションは解釈されず、鍵の部分だけが使われます。
 
 ## ライセンス
 

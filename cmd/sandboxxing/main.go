@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -116,6 +117,10 @@ Run "sandboxxing -check" to verify the host. See README.md for the host setup.
 		return err
 	}
 	if *showPasswd {
+		if srv.PasswordAuthDisabled() {
+			fmt.Fprintln(os.Stderr, "password authentication is disabled by the configuration")
+			return nil
+		}
 		fmt.Println(srv.Password())
 		return nil
 	}
@@ -145,7 +150,9 @@ Run "sandboxxing -check" to verify the host. See README.md for the host setup.
 		"version", version,
 		"address", cfg.SSHAddr,
 		"control_users", cfg.AdminUsers,
-		"password_file", cfg.PasswordFile,
+		"password_auth", !srv.PasswordAuthDisabled(),
+		"public_key_auth", srv.PublicKeyAuthEnabled(),
+		"authorized_keys", cfg.AuthorizedKeys,
 		"data_dir", cfg.DataDir,
 	)
 	return srv.Serve(ctx)
@@ -156,6 +163,20 @@ func runChecks(cfg *config.Config, log *slog.Logger, st *state.State) error {
 	defer cancel()
 	vms := vm.New(cfg, log, st)
 	failed := 0
+
+	fmt.Printf("%-6s %-18s %s\n", "----", "authentication", "----")
+	for _, c := range authChecks(cfg) {
+		result := "ok"
+		if !c.OK {
+			result = "FAIL"
+			failed++
+		}
+		fmt.Printf("%-6s %-18s %s\n", result, c.Name, c.Detail)
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d authentication check(s) failed", failed)
+	}
+
 	for _, c := range vms.HostCheck(ctx) {
 		result := "ok"
 		if !c.OK {
@@ -170,6 +191,59 @@ func runChecks(cfg *config.Config, log *slog.Logger, st *state.State) error {
 		return fmt.Errorf("%d prerequisite check(s) failed", failed)
 	}
 	return nil
+}
+
+// hostCheck mirrors the shape of host.Checkable for the local checks.
+type hostCheck struct {
+	Name   string
+	OK     bool
+	Detail string
+}
+
+// authChecks reports how a client would authenticate, and whether that can
+// work at all.
+func authChecks(cfg *config.Config) []hostCheck {
+	var checks []hostCheck
+	switch {
+	case cfg.PasswordAuthDisabled:
+		checks = append(checks, hostCheck{Name: "password auth", OK: true, Detail: "disabled by the configuration"})
+	default:
+		checks = append(checks, hostCheck{Name: "password auth", OK: true, Detail: "enabled"})
+	}
+
+	switch {
+	case cfg.AuthorizedKeysDisabled:
+		checks = append(checks, hostCheck{Name: "public key auth", OK: true, Detail: "disabled by the configuration"})
+	default:
+		b, err := os.ReadFile(cfg.AuthorizedKeys)
+		switch {
+		case err != nil && os.IsNotExist(err) && !cfg.AuthorizedKeysExplicit:
+			checks = append(checks, hostCheck{Name: "public key auth", OK: true,
+				Detail: "off, no keys in " + cfg.AuthorizedKeys})
+		case err != nil:
+			checks = append(checks, hostCheck{Name: "public key auth", OK: false, Detail: err.Error()})
+		default:
+			keys := 0
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					keys++
+				}
+			}
+			if keys == 0 && cfg.AuthorizedKeysExplicit {
+				checks = append(checks, hostCheck{Name: "public key auth", OK: false,
+					Detail: "no usable keys in " + cfg.AuthorizedKeys})
+				break
+			}
+			checks = append(checks, hostCheck{Name: "public key auth", OK: true,
+				Detail: fmt.Sprintf("%d key(s) in %s", keys, cfg.AuthorizedKeys)})
+		}
+	}
+	if cfg.PasswordAuthDisabled && cfg.AuthorizedKeysDisabled {
+		checks = append(checks, hostCheck{Name: "reachability", OK: false,
+			Detail: "every authentication method is disabled"})
+	}
+	return checks
 }
 
 func advertisedHost(cfg *config.Config) string {

@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,14 +30,29 @@ type Config struct {
 	// (ls, new, rm, ...). Any other user name is interpreted as a container
 	// name for direct access.
 	AdminUsers []string `json:"admin_users"`
-	// Password is the shared password for the control users. When empty the
-	// daemon generates one on first start and stores it in PasswordFile.
+	// Password is the shared password for the control users:
+	//
+	//   - absent or empty: a password is generated on the first start and
+	//     stored in PasswordFile
+	//   - a non-empty string: that value is used
+	//   - null: password authentication is disabled entirely
 	Password string `json:"password"`
 	// PasswordFile is where the generated password is kept.
 	PasswordFile string `json:"password_file"`
-	// AuthorizedKeysFile lists the SSH public keys that may connect. When the
-	// file does not exist, everyone who knows the password may connect.
-	AuthorizedKeysFile string `json:"authorized_keys_file"`
+	// PasswordAuthDisabled is set when "password" was null. Password
+	// authentication is then not offered to clients at all.
+	PasswordAuthDisabled bool `json:"-"`
+
+	// AuthorizedKeys is a file in sshd(8) authorized_keys format whose keys
+	// may connect. It defaults to <data_dir>/authorized_keys; a file that
+	// does not exist simply turns public key authentication off. Setting it
+	// to null disables public key authentication explicitly, and a file named
+	// in the configuration that is missing is reported.
+	AuthorizedKeys string `json:"authorized_keys"`
+	// AuthorizedKeysDisabled is set when "authorized_keys" was null.
+	AuthorizedKeysDisabled bool `json:"-"`
+	// AuthorizedKeysExplicit is set when the configuration named a key file.
+	AuthorizedKeysExplicit bool `json:"-"`
 
 	// Bridge is the host bridge name that connects containers to the host.
 	Bridge string `json:"bridge"`
@@ -169,14 +185,46 @@ func Load(path string) (*Config, error) {
 		if _, ok := raw["password_file"]; !ok {
 			cfg.PasswordFile = ""
 		}
-		if _, ok := raw["authorized_keys_file"]; !ok {
-			cfg.AuthorizedKeysFile = ""
+	}
+
+	// password: null disables password authentication. It is distinct from an
+	// absent or empty value, which makes the daemon generate a password.
+	if v, ok := raw["password"]; ok && isJSONNull(v) {
+		cfg.Password = ""
+		cfg.PasswordAuthDisabled = true
+	}
+
+	// authorized_keys is the current name; authorized_keys_file is the name
+	// used by earlier releases and is still honoured.
+	keyRaw, hasKeys := raw["authorized_keys"]
+	if !hasKeys {
+		keyRaw, hasKeys = raw["authorized_keys_file"]
+	}
+	switch {
+	case !hasKeys:
+		// The default location is filled in by Validate.
+	case isJSONNull(keyRaw):
+		cfg.AuthorizedKeys = ""
+		cfg.AuthorizedKeysDisabled = true
+	default:
+		var path string
+		if err := json.Unmarshal(keyRaw, &path); err == nil && path != "" {
+			cfg.AuthorizedKeys = path
+			cfg.AuthorizedKeysExplicit = true
 		}
 	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// isJSONNull reports whether a raw configuration value is the JSON null
+// literal. It is how "disable this feature" is distinguished from "leave the
+// default in place".
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }
 
 // Validate normalizes derived fields and checks the configuration.
@@ -199,8 +247,11 @@ func (c *Config) Validate() error {
 	if c.PasswordFile == "" {
 		c.PasswordFile = filepath.Join(c.DataDir, "password")
 	}
-	if c.AuthorizedKeysFile == "" {
-		c.AuthorizedKeysFile = filepath.Join(c.DataDir, "authorized_keys")
+	if c.AuthorizedKeys == "" && !c.AuthorizedKeysDisabled {
+		c.AuthorizedKeys = filepath.Join(c.DataDir, "authorized_keys")
+	}
+	if c.PasswordAuthDisabled && c.AuthorizedKeysDisabled {
+		return errors.New("password and public key authentication are both disabled, so nobody could connect")
 	}
 	if c.Bridge == "" {
 		c.Bridge = "sbx0"

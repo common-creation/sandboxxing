@@ -72,33 +72,6 @@ func New(cfg *config.Config, log *slog.Logger, vms *vm.Manager, st *state.State,
 	}
 	s.sshConf = &ssh.ServerConfig{
 		ServerVersion: "SSH-2.0-sandboxxing",
-		PasswordCallback: func(conn ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if subtleCompare(string(pass), s.password) {
-				return &ssh.Permissions{Extensions: map[string]string{
-					"user":   conn.User(),
-					"auth":   "password",
-					"pubkey": "",
-				}}, nil
-			}
-			s.log.Warn("authentication failed", "user", conn.User(), "remote", conn.RemoteAddr().String())
-			return nil, errors.New("invalid password")
-		},
-		PublicKeyCallback: func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			for _, allowed := range s.keys {
-				if subtleCompare(string(allowed.Marshal()), string(key.Marshal())) {
-					return &ssh.Permissions{Extensions: map[string]string{
-						"user":   conn.User(),
-						"auth":   "publickey",
-						"pubkey": ssh.FingerprintSHA256(key),
-					}}, nil
-				}
-			}
-			if len(s.keys) == 0 {
-				return nil, errors.New("public key authentication is not enabled; add keys to authorized_keys_file or use the password")
-			}
-			s.log.Warn("public key rejected", "user", conn.User(), "fingerprint", ssh.FingerprintSHA256(key))
-			return nil, errors.New("unknown public key")
-		},
 		BannerCallback: func(conn ssh.ConnMetadata) string {
 			if s.cfg.IsAdminUser(conn.User()) {
 				return "sandboxxing: control session\n"
@@ -106,12 +79,61 @@ func New(cfg *config.Config, log *slog.Logger, vms *vm.Manager, st *state.State,
 			return ""
 		},
 	}
+	// A method that is disabled must not be advertised, otherwise the client
+	// keeps asking for it and only gets a generic "permission denied". The
+	// callbacks are therefore only installed when the method is enabled.
+	if !cfg.PasswordAuthDisabled {
+		s.sshConf.PasswordCallback = func(conn ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if subtleCompare(string(pass), s.password) {
+				return permissions(conn.User(), "password", ""), nil
+			}
+			s.log.Warn("password authentication failed",
+				"user", conn.User(), "remote", conn.RemoteAddr().String())
+			return nil, errors.New("invalid password")
+		}
+	}
+	if !cfg.AuthorizedKeysDisabled {
+		s.sshConf.PublicKeyCallback = func(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			fingerprint := ssh.FingerprintSHA256(key)
+			for _, allowed := range s.keys {
+				if subtleCompare(string(allowed.Marshal()), string(key.Marshal())) {
+					s.log.Info("public key accepted",
+						"user", conn.User(), "fingerprint", fingerprint, "remote", conn.RemoteAddr().String())
+					return permissions(conn.User(), "publickey", fingerprint), nil
+				}
+			}
+			if len(s.keys) == 0 {
+				return nil, errors.New("public key authentication is not configured")
+			}
+			s.log.Warn("public key rejected", "user", conn.User(), "fingerprint", fingerprint)
+			return nil, errors.New("unknown public key")
+		}
+	}
 	s.sshConf.AddHostKey(hostKey)
 	return s, nil
 }
 
-// Password returns the shared access password.
+// permissions builds the permissions attached to an authenticated session.
+func permissions(user, method, fingerprint string) *ssh.Permissions {
+	return &ssh.Permissions{Extensions: map[string]string{
+		"user":   user,
+		"auth":   method,
+		"pubkey": fingerprint,
+	}}
+}
+
+// Password returns the shared access password. It is empty when password
+// authentication is disabled.
 func (s *Server) Password() string { return s.password }
+
+// PasswordAuthDisabled reports whether password authentication was turned off
+// with "password": null.
+func (s *Server) PasswordAuthDisabled() bool { return s.cfg.PasswordAuthDisabled }
+
+// PublicKeyAuthEnabled reports whether public key authentication is active.
+func (s *Server) PublicKeyAuthEnabled() bool {
+	return !s.cfg.AuthorizedKeysDisabled && len(s.keys) > 0
+}
 
 // Serve accepts connections until the context is cancelled.
 func (s *Server) Serve(ctx context.Context) error {
@@ -214,15 +236,22 @@ func loadOrCreateHostKey(cfg *config.Config, log *slog.Logger) (ssh.Signer, erro
 	return ssh.NewSignerFromKey(key)
 }
 
-// loadAuthorizedKeys reads the optional list of allowed public keys. A missing
-// file simply disables key based authentication.
+// loadAuthorizedKeys reads the public keys that may connect. Public key
+// authentication is disabled when the configuration sets "authorized_keys" to
+// null, and a file named in the configuration must be readable: a typo should
+// not silently lock everyone out.
 func loadAuthorizedKeys(cfg *config.Config, log *slog.Logger) ([]ssh.PublicKey, error) {
-	b, err := os.ReadFile(cfg.AuthorizedKeysFile)
+	if cfg.AuthorizedKeysDisabled {
+		log.Info("public key authentication is disabled by the configuration")
+		return nil, nil
+	}
+	b, err := os.ReadFile(cfg.AuthorizedKeys)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) && !cfg.AuthorizedKeysExplicit {
+			log.Debug("no authorized keys file; public key authentication is off", "path", cfg.AuthorizedKeys)
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", cfg.AuthorizedKeysFile, err)
+		return nil, fmt.Errorf("read the authorized keys %s: %w", cfg.AuthorizedKeys, err)
 	}
 	var keys []ssh.PublicKey
 	for _, line := range strings.Split(string(b), "\n") {
@@ -232,18 +261,27 @@ func loadAuthorizedKeys(cfg *config.Config, log *slog.Logger) ([]ssh.PublicKey, 
 		}
 		key, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
 		if err != nil {
-			log.Warn("ignoring unparsable line in authorized keys", "file", cfg.AuthorizedKeysFile, "error", err)
+			log.Warn("ignoring unparsable line in authorized keys", "file", cfg.AuthorizedKeys, "error", err)
 			continue
 		}
 		keys = append(keys, key)
 	}
 	if len(keys) == 0 {
-		log.Warn("no usable keys found; password authentication remains available", "file", cfg.AuthorizedKeysFile)
+		if cfg.AuthorizedKeysExplicit {
+			return nil, fmt.Errorf("no usable public keys found in %s", cfg.AuthorizedKeys)
+		}
+		log.Debug("the authorized keys file is empty; public key authentication is off", "path", cfg.AuthorizedKeys)
+		return nil, nil
 	}
+	log.Info("public key authentication enabled", "path", cfg.AuthorizedKeys, "keys", len(keys))
 	return keys, nil
 }
 
 func loadOrCreatePassword(cfg *config.Config, log *slog.Logger) (string, error) {
+	if cfg.PasswordAuthDisabled {
+		log.Info("password authentication is disabled by the configuration")
+		return "", nil
+	}
 	if cfg.Password != "" {
 		return cfg.Password, nil
 	}

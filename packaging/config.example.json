@@ -4,6 +4,7 @@
   "domain": "",
   "admin_users": ["sandbox", "admin"],
   "password": "",
+  "authorized_keys": "",
   "bridge": "sbx0",
   "subnet": "10.100.0.0/16",
   "image": "arch",
