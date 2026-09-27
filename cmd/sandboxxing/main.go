@@ -260,6 +260,33 @@ func authChecks(cfg *config.Config) []hostCheck {
 			Detail: "every authentication method is disabled"})
 	}
 	checks = append(checks, dnsCheck(cfg))
+	checks = append(checks, shareChecks(cfg)...)
+	return checks
+}
+
+// shareChecks reports whether the configured shared directories exist on the
+// host. A missing source directory makes nspawn create a mount point that
+// cannot be filled, so it is worth catching before the first container start.
+func shareChecks(cfg *config.Config) []hostCheck {
+	checks := make([]hostCheck, 0, len(cfg.Shares))
+	for _, share := range cfg.Shares {
+		info, err := os.Stat(share.Path)
+		switch {
+		case err != nil:
+			checks = append(checks, hostCheck{Name: "share " + share.Name(), OK: false,
+				Detail: share.Path + ": " + err.Error()})
+		case !info.IsDir():
+			checks = append(checks, hostCheck{Name: "share " + share.Name(), OK: false,
+				Detail: share.Path + " is not a directory"})
+		default:
+			mode := "rw"
+			if share.ReadOnly {
+				mode = "ro"
+			}
+			checks = append(checks, hostCheck{Name: "share " + share.Name(), OK: true,
+				Detail: share.Path + " -> " + share.MountTarget() + " (" + mode + ")"})
+		}
+	}
 	return checks
 }
 

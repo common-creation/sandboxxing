@@ -58,6 +58,9 @@ type Options struct {
 	Comment string
 	Tags    []string
 	Env     map[string]string
+	// Shares are extra host directories for this container, on top of the
+	// ones configured with the "shares" option.
+	Shares []config.Share
 }
 
 // Create builds a new container: the cached base tree is materialised as an
@@ -116,6 +119,12 @@ func (m *Manager) Copy(ctx context.Context, src string, opts Options) (*state.VM
 	if opts.Disk <= 0 {
 		opts.Disk = source.Disk
 	}
+	// A copy keeps the shares of its source unless it names its own.
+	if len(opts.Shares) > 0 {
+		opts.Shares = append(append([]config.Share{}, source.Shares...), opts.Shares...)
+	} else {
+		opts.Shares = append([]config.Share{}, source.Shares...)
+	}
 	name, err := m.reserveName(opts.Name)
 	if err != nil {
 		return nil, err
@@ -172,6 +181,7 @@ func (m *Manager) finish(ctx context.Context, diskPath string, opts Options) (*s
 		Comment:   opts.Comment,
 		Tags:      opts.Tags,
 		Env:       opts.Env,
+		Shares:    opts.Shares,
 		IP:        ip,
 		NetConfig: state.NetConfigVersion,
 	}

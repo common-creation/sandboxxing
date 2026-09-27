@@ -402,6 +402,7 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `bridge` | `sbx0` | Bridge for containers |
 | `subnet` | `10.100.0.0/16` | Subnet for containers (/24 or larger) |
 | `dns` | (empty) | Resolvers written to the containers. Empty reuses the host resolvers, skipping ones that only run on the host (`127.0.0.53`) |
+| `shares` | (empty) | Host directories bind mounted into every container: a path string or `{"path", "target", "read_only"}` |
 | `image_dir` | `<data_dir>/images` | Cache of pacstrap trees (converted to ext4 images on `new`) |
 | `image` | `arch` | Default image name |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
@@ -414,6 +415,34 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 | `default_memory` | `2G` | Default memory for `new` |
 | `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## Sharing host directories
+
+Host directories can be bind mounted into containers, either for every
+container through the configuration or per container with `--share`.
+
+```json
+{
+  "shares": [
+    "/srv/projects",
+    { "path": "/srv/cache", "target": "/cache", "read_only": true }
+  ]
+}
+```
+
+```bash
+# one container only
+ssh sandbox@host -p 2222 new --name=demo --share=/srv/data
+ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
+```
+
+- The short form `"/srv/projects"` is mounted at `/shared/projects`.
+- `path[:target][:ro]` selects the container path and read-only access.
+- A container share replaces a global share with the same target.
+- The host directory is used directly, so changes are visible on both sides
+  immediately. There is no copy and no per-container overlay.
+- Adding a share to an existing container needs a restart (`restart <name>`)
+  and the host directory must exist; `-check` reports the configured ones.
 
 ## DNS inside the containers
 

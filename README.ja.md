@@ -394,6 +394,7 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `bridge` | `sbx0` | コンテナ用ブリッジ |
 | `subnet` | `10.100.0.0/16` | コンテナ用サブネット(/24 以上) |
 | `dns` | (空) | コンテナに書き込むリゾルバ。空ならホストの resolv.conf を流用(ホスト専用の `127.0.0.53` は除外) |
+| `shares` | (空) | 全コンテナに bind mount するホストディレクトリ。パス文字列または `{"path","target","read_only"}` |
 | `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
 | `image` | `arch` | 既定イメージ名 |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
@@ -406,6 +407,34 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 | `default_memory` | `2G` | `new` の既定メモリ |
 | `default_disk` | `10G` | `new` の既定ディスク |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+
+## ホストディレクトリの共有
+
+ホストのディレクトリをコンテナに bind mount できます。設定で全コンテナに
+適用する方法と、`--share` でコンテナ個別に指定する方法があります。
+
+```json
+{
+  "shares": [
+    "/srv/projects",
+    { "path": "/srv/cache", "target": "/cache", "read_only": true }
+  ]
+}
+```
+
+```bash
+# 特定のコンテナだけ
+ssh sandbox@host -p 2222 new --name=demo --share=/srv/data
+ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
+```
+
+- 短縮形 `"/srv/projects"` は `/shared/projects` にマウントされます。
+- `path[:target][:ro]` でコンテナ内パスと読み取り専用を指定できます。
+- 同じ target のコンテナ個別設定はグローバル設定を上書きします。
+- ホストのディレクトリを直接使うため、変更は即座に両側へ反映されます。
+  コピーやコンテナ単位のオーバーレイは行いません。
+- 既存コンテナへの追加は再起動(`restart <name>`)で反映されます。
+  ホスト側のディレクトリは事前に作成してください(`-check` で確認できます)。
 
 ## コンテナ内の DNS
 

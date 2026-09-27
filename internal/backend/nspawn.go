@@ -101,6 +101,15 @@ func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) erro
 		"--link-journal=no",
 		"--console=passive",
 	)
+	// Shared host directories. The bind mount is happy when the destination
+	// does not exist inside the image: nspawn creates the mount point.
+	for _, share := range n.shares(vm) {
+		option := "--bind="
+		if share.ReadOnly {
+			option = "--bind-ro="
+		}
+		args = append(args, option+share.Path+":"+share.MountTarget())
+	}
 
 	progress.From(ctx).Step("starting container %s", vm.Name)
 	cmd := process.Command(ctx, "systemd-run", args...)
@@ -155,6 +164,32 @@ func (n *Nspawn) Limits(ctx context.Context, vm *state.VM) error {
 		return fmt.Errorf("update limits of %s: %w: %s", vm.Name, err, out)
 	}
 	return nil
+}
+
+// shares returns the host directories to mount into a container: the ones
+// configured for every container plus the ones recorded for this container.
+// A container specific entry with the same target wins.
+func (n *Nspawn) shares(vm *state.VM) []config.Share {
+	byTarget := map[string]config.Share{}
+	var order []string
+	add := func(share config.Share) {
+		target := share.MountTarget()
+		if _, ok := byTarget[target]; !ok {
+			order = append(order, target)
+		}
+		byTarget[target] = share
+	}
+	for _, share := range n.cfg.Shares {
+		add(share)
+	}
+	for _, share := range vm.Shares {
+		add(share)
+	}
+	out := make([]config.Share, 0, len(order))
+	for _, target := range order {
+		out = append(out, byTarget[target])
+	}
+	return out
 }
 
 // Stop powers the container off.

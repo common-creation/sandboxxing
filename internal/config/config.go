@@ -65,6 +65,10 @@ type Config struct {
 	// 127.0.0.53), because the container does not run that resolver.
 	DNS []string `json:"dns"`
 
+	// Shares are host directories that every container can access. They are
+	// bind mounted into each container when it starts.
+	Shares []Share `json:"shares"`
+
 	// ImageDir is where built root file system images are cached.
 	ImageDir string `json:"image_dir"`
 	// Image is the default image used by `new` when --image is omitted.
@@ -294,6 +298,18 @@ func (c *Config) Validate() error {
 		if net.ParseIP(server) == nil {
 			return fmt.Errorf("invalid dns entry %q: use an IP address", server)
 		}
+	}
+	seenTarget := map[string]string{}
+	for i := range c.Shares {
+		share := &c.Shares[i]
+		if err := share.Validate(); err != nil {
+			return err
+		}
+		target := share.MountTarget()
+		if previous, ok := seenTarget[target]; ok {
+			return fmt.Errorf("shares %q and %q are both mounted at %s", previous, share.Path, target)
+		}
+		seenTarget[target] = share.Path
 	}
 	switch c.LogLevel {
 	case "", "debug", "info", "warn", "error":

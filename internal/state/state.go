@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/common-creation/sandboxxing/internal/config"
 )
 
 // NetConfigVersion is the version of the network configuration that
@@ -41,6 +43,9 @@ type VM struct {
 	Comment   string            `json:"comment,omitempty"`
 	Tags      []string          `json:"tags,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
+	// Shares are the host directories that this container mounts, on top of
+	// the ones configured for the whole host.
+	Shares []config.Share `json:"shares,omitempty"`
 }
 
 // State is the whole persisted state file.

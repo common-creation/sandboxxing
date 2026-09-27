@@ -158,8 +158,9 @@ Commands:
   ls [-l] [--group=none|tag|type] [--json] [name|pattern]
         list containers
   new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
-      [--comment=TEXT] [--tag=T] [--env K=V] [--setup-script=FILE] [--json]
-        create and boot a container
+      [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
+      [--setup-script=FILE] [--json]
+        create and boot a container (--share mounts a host directory)
   rm <name>... [--json]
         remove containers
   restart <name> [--json]
@@ -285,6 +286,13 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 	}
 	if len(info.VM.Env) > 0 {
 		fmt.Fprintf(sess.Out, "env:       %s\n", envString(info.VM.Env))
+	}
+	if shares := r.effectiveShares(info.VM); len(shares) > 0 {
+		rendered := make([]string, 0, len(shares))
+		for _, s := range shares {
+			rendered = append(rendered, s.String())
+		}
+		fmt.Fprintf(sess.Out, "shares:    %s\n", strings.Join(rendered, ", "))
 	}
 	if info.Running {
 		fmt.Fprintf(sess.Out, "uptime:    %s\n", humanDuration(info.Uptime))
@@ -462,6 +470,32 @@ func (r *Runner) cmdHostCheck(ctx context.Context, args []string, sess *IO) int 
 		return 1
 	}
 	return 0
+}
+
+// effectiveShares lists the host directories a container mounts: the ones
+// configured for the host followed by the container specific ones, with a
+// container entry replacing a global one that targets the same path.
+func (r *Runner) effectiveShares(vm *state.VM) []config.Share {
+	byTarget := map[string]config.Share{}
+	var order []string
+	add := func(share config.Share) {
+		target := share.MountTarget()
+		if _, ok := byTarget[target]; !ok {
+			order = append(order, target)
+		}
+		byTarget[target] = share
+	}
+	for _, share := range r.cfg.Shares {
+		add(share)
+	}
+	for _, share := range vm.Shares {
+		add(share)
+	}
+	out := make([]config.Share, 0, len(order))
+	for _, target := range order {
+		out = append(out, byTarget[target])
+	}
+	return out
 }
 
 func (r *Runner) vmSSH(vm *state.VM) string {

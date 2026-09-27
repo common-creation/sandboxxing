@@ -23,6 +23,7 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		"comment":      {kind: flagString},
 		"tag":          {kind: flagString, repeatable: true, commaList: true},
 		"env":          {kind: flagString, repeatable: true},
+		"share":        {kind: flagString, repeatable: true},
 		"setup-script": {kind: flagString},
 		"json":         {kind: flagBool},
 		"no-start":     {kind: flagBool},
@@ -51,6 +52,9 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		return r.fail(sess, err)
 	}
 	if create.Env, err = parseEnv(opts.strs("env")); err != nil {
+		return r.fail(sess, err)
+	}
+	if create.Shares, err = parseShares(opts.strs("share")); err != nil {
 		return r.fail(sess, err)
 	}
 
@@ -309,6 +313,22 @@ func quoteAll(args []string) []string {
 		out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 	}
 	return out
+}
+
+// parseShares converts the --share values into share definitions.
+func parseShares(values []string) ([]config.Share, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	shares := make([]config.Share, 0, len(values))
+	for _, v := range values {
+		share, err := config.ParseShare(v)
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, share)
+	}
+	return shares, nil
 }
 
 func parseEnv(values []string) (map[string]string, error) {
