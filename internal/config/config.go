@@ -80,7 +80,8 @@ type Config struct {
 	// on the container's own disk image and is limited only by its size.
 	TmpSize string `json:"tmp_size"`
 
-	// ImageDir is where built root file system images are cached.
+	// ImageDir is where golden ext4 images built by pacstrap are cached.
+	// A container is created by reflink copying the golden image.
 	ImageDir string `json:"image_dir"`
 	// Image is the default image used by `new` when --image is omitted.
 	Image string `json:"image"`

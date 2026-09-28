@@ -398,8 +398,9 @@ scp -r ./site demo@host:/srv/
         /var/lib/sandboxxing/  bridge sbx0 + nft NAT
 ```
 
-- **Container backing**: `systemd-nspawn --image=<name>.img`. Disk images are
-  created from the rootfs built by `pacstrap` using `mke2fs -d`.
+- **Container backing**: `systemd-nspawn --image=<name>.img`. Each container
+  is a reflink copy (`cp --reflink=auto`) of the golden ext4 image grown
+  with `resize2fs` to the requested disk size.
 - **Startup**: transient units via `systemd-run` (`sandboxxing-<name>`).
   Resources are limited with `MemoryMax` and `CPUQuota`.
 - **Networking**: a bridge (`sbx0`) is created on the host and containers
@@ -428,7 +429,7 @@ scp -r ./site demo@host:/srv/
 | `dns` | (empty) | Resolvers written to the containers. Empty reuses the host resolvers, skipping ones that only run on the host (`127.0.0.53`) |
 | `shares` | (empty) | Host directories bind mounted into every container: a path string or `{"path", "target", "read_only"}` |
 | `tmp_size` | (empty) | `/tmp` handling: empty keeps the nspawn default tmpfs (10% of the host memory), a size or percentage resizes it, and `"disk"` stores `/tmp` on the container image |
-| `image_dir` | `<data_dir>/images` | Cache of pacstrap trees (converted to ext4 images on `new`) |
+| `image_dir` | `<data_dir>/images` | Cache of golden ext4 images (reflink copied on `new`) |
 | `image` | `arch` | Default image name |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
 | `arch` | auto-detected | Architecture for pacstrap |

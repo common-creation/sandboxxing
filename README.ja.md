@@ -390,8 +390,9 @@ scp -r ./site demo@host:/srv/
         /var/lib/sandboxxing/  bridge sbx0 + nft NAT
 ```
 
-- **コンテナの実体**: `systemd-nspawn --image=<name>.img`。ディスク
-  イメージは `pacstrap` で作った rootfs から `mke2fs -d` で作成します。
+- **コンテナの実体**: `systemd-nspawn --image=<name>.img`。各コンテナは
+  golden ext4 イメージの reflink コピー(`cp --reflink=auto`)を `resize2fs`
+  で要求サイズまで成長させたものです。
 - **起動**: `systemd-run` による transient unit (`sandboxxing-<name>`)。
   `MemoryMax` と `CPUQuota` でリソースを制限します。
 - **ネットワーク**: ホストに bridge (`sbx0`) を作成し、コンテナ側は
@@ -420,7 +421,7 @@ scp -r ./site demo@host:/srv/
 | `dns` | (空) | コンテナに書き込むリゾルバ。空ならホストの resolv.conf を流用(ホスト専用の `127.0.0.53` は除外) |
 | `shares` | (空) | 全コンテナに bind mount するホストディレクトリ。パス文字列または `{"path","target","read_only"}` |
 | `tmp_size` | (空) | `/tmp` の扱い。空なら nspawn 既定の tmpfs(ホストメモリの10%)、サイズ/割合で変更、`"disk"` でコンテナイメージ上に保存 |
-| `image_dir` | `<data_dir>/images` | pacstrap ツリーのキャッシュ(`new` 時に ext4 イメージ化) |
+| `image_dir` | `<data_dir>/images` | golden ext4 イメージのキャッシュ(`new` 時に reflink コピー) |
 | `image` | `arch` | 既定イメージ名 |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
 | `arch` | 自動判定 | pacstrap のアーキテクチャ |

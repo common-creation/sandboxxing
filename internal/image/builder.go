@@ -1,16 +1,18 @@
-// Package image builds and caches Arch Linux root file system trees with
-// pacstrap(8) from arch-install-scripts. A cached tree is materialised into
-// an ext4 image for each container.
+// Package image builds and caches Arch Linux golden ext4 images with
+// pacstrap(8) from arch-install-scripts. A cached golden image is reflink
+// copied for each container and grown to the requested disk size.
 package image
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/common-creation/sandboxxing/internal/config"
@@ -21,7 +23,7 @@ import (
 // ErrUnsupported is returned for image names that are not usable.
 var ErrUnsupported = errors.New("unsupported image")
 
-// Builder builds and caches root file system trees.
+// Builder builds and caches golden ext4 images.
 type Builder struct {
 	cfg *config.Config
 	log *slog.Logger
@@ -32,9 +34,11 @@ func New(cfg *config.Config, log *slog.Logger) *Builder {
 	return &Builder{cfg: cfg, log: log}
 }
 
-// Tree returns the cached root file system tree of the named image, building
-// it with pacstrap(8) when it does not exist yet.
-func (b *Builder) Tree(ctx context.Context, name string) (string, error) {
+// Image returns the cached golden ext4 image of the named image, building it
+// with pacstrap(8) when it does not exist yet. The golden image is kept at a
+// minimal variable size; callers reflink copy it and grow the copy to the
+// requested disk size.
+func (b *Builder) Image(ctx context.Context, name string) (string, error) {
 	if name == "" {
 		name = b.cfg.Image
 	}
@@ -45,48 +49,51 @@ func (b *Builder) Tree(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 
-	dir := filepath.Join(b.cfg.ImageDir, name)
-	done := filepath.Join(dir, ".sbx-complete")
-	if _, err := os.Stat(done); err == nil {
-		return dir, nil
+	img := filepath.Join(b.cfg.ImageDir, name+".img")
+	if st, err := os.Stat(img); err == nil && st.Mode().IsRegular() && st.Size() > 0 {
+		return img, nil
 	}
 
 	b.log.Info("building image with pacstrap", "image", name, "packages", len(b.cfg.ImagePackages))
 	progress.From(ctx).Step("building base image %q with pacstrap (the first run downloads packages)", name)
-	tmp := filepath.Join(b.cfg.ImageDir, "."+name+".tmp")
-	if err := os.RemoveAll(tmp); err != nil {
+	tmpTree := filepath.Join(b.cfg.ImageDir, "."+name+".tmp.d")
+	tmpImg := filepath.Join(b.cfg.ImageDir, "."+name+".tmp.img")
+	if err := os.RemoveAll(tmpTree); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
+	os.Remove(tmpImg)
+	if err := os.MkdirAll(tmpTree, 0o755); err != nil {
 		return "", err
 	}
-	if err := b.pacstrap(ctx, tmp); err != nil {
-		os.RemoveAll(tmp)
+	if err := b.pacstrap(ctx, tmpTree); err != nil {
+		os.RemoveAll(tmpTree)
+		os.Remove(tmpImg)
 		return "", err
 	}
-	if err := b.prepare(tmp); err != nil {
-		os.RemoveAll(tmp)
+	if err := b.prepare(tmpTree); err != nil {
+		os.RemoveAll(tmpTree)
+		os.Remove(tmpImg)
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(tmp, ".sbx-complete"), []byte(name+"\n"), 0o644); err != nil {
-		os.RemoveAll(tmp)
+	if err := PackExt4(ctx, tmpTree, tmpImg, goldenDiskSize(tmpTree)); err != nil {
+		os.RemoveAll(tmpTree)
+		os.Remove(tmpImg)
 		return "", err
 	}
+	os.RemoveAll(tmpTree)
 
 	// Another daemon may have finished first; keep whatever is complete.
-	if _, err := os.Stat(done); err == nil {
-		os.RemoveAll(tmp)
-		return dir, nil
+	if st, err := os.Stat(img); err == nil && st.Mode().IsRegular() && st.Size() > 0 {
+		os.Remove(tmpImg)
+		return img, nil
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		os.RemoveAll(tmp)
+	if err := os.Rename(tmpImg, img); err != nil {
+		os.Remove(tmpImg)
 		return "", err
 	}
-	if err := os.Rename(tmp, dir); err != nil {
-		os.RemoveAll(tmp)
-		return "", err
-	}
-	return dir, nil
+	// Drop the legacy tree cache left by older releases.
+	os.RemoveAll(filepath.Join(b.cfg.ImageDir, name))
+	return img, nil
 }
 
 // List returns the cached image names.
@@ -98,24 +105,50 @@ func (b *Builder) List() ([]string, error) {
 		}
 		return nil, err
 	}
+	seen := map[string]bool{}
 	var names []string
 	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(b.cfg.ImageDir, e.Name(), ".sbx-complete")); err != nil {
+		// Golden ext4 images.
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".img") {
+			name := strings.TrimSuffix(e.Name(), ".img")
+			if validateName(name) != nil {
+				continue
+			}
+			if info, err := e.Info(); err != nil || info.Size() == 0 {
+				continue
+			}
+			if !seen[name] {
+				seen[name] = true
+				names = append(names, name)
+			}
 			continue
 		}
-		names = append(names, e.Name())
+		// Legacy tree caches left by older releases.
+		if e.IsDir() {
+			if _, err := os.Stat(filepath.Join(b.cfg.ImageDir, e.Name(), ".sbx-complete")); err != nil {
+				continue
+			}
+			if !seen[e.Name()] {
+				seen[e.Name()] = true
+				names = append(names, e.Name())
+			}
+		}
 	}
+	sort.Strings(names)
 	return names, nil
 }
 
-// Delete removes a cached image tree.
+// Delete removes a cached golden image and any legacy tree cache.
 func (b *Builder) Delete(name string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
+	os.Remove(filepath.Join(b.cfg.ImageDir, name+".img"))
+	os.Remove(filepath.Join(b.cfg.ImageDir, "."+name+".tmp.img"))
+	os.RemoveAll(filepath.Join(b.cfg.ImageDir, "."+name+".tmp.d"))
 	return os.RemoveAll(filepath.Join(b.cfg.ImageDir, name))
 }
 
@@ -310,6 +343,61 @@ func disableUnit(rootfs, unit string) {
 	} {
 		os.Remove(filepath.Join(rootfs, dir, unit))
 	}
+}
+
+// fallbackGoldenSize is used when the tree size cannot be measured. An Arch
+// installation is around 1.5GB, so 4GB leaves ample margin.
+const fallbackGoldenSize = 4 << 30
+
+// goldenMinSize is the lower bound for a golden image. ext4 metadata and the
+// journal need room beyond the file payload, so even a tiny tree is packed
+// with headroom.
+const goldenMinSize = 3 << 30
+
+// goldenDiskSize estimates a minimal variable size for the golden image from
+// the pacstrap tree: payload plus 1GB plus a quarter for ext4 metadata,
+// rounded up to 64MB. It falls back to fallbackGoldenSize on any error.
+func goldenDiskSize(tree string) int64 {
+	used, err := treeDiskUsage(tree)
+	if err != nil || used <= 0 {
+		return fallbackGoldenSize
+	}
+	size := used + (1 << 30) + used/4
+	const align = 64 << 20
+	size = (size + align - 1) / align * align
+	if size < goldenMinSize {
+		size = goldenMinSize
+	}
+	return size
+}
+
+// treeDiskUsage sums the payload of a tree, rounding each file up to a 4K
+// block and counting 4K per directory for metadata.
+func treeDiskUsage(root string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			total += 4096
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		sz := info.Size()
+		if sz < 0 {
+			return nil
+		}
+		total += (sz + 4095) / 4096 * 4096
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // PackExt4 creates an ext4 file system of size bytes from the tree directory.

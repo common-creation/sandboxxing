@@ -65,8 +65,8 @@ type Options struct {
 	Shares []config.Share
 }
 
-// Create builds a new container: the cached base tree is materialised as an
-// ext4 disk image, configured, registered and booted.
+// Create builds a new container: the cached golden ext4 image is reflink
+// copied, grown to the requested size, configured, registered and booted.
 func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 	if opts.Name != "" && !state.ValidName(opts.Name) {
 		return nil, fmt.Errorf("invalid container name %q: use letters, digits, '-', '_' or '.'", opts.Name)
@@ -81,15 +81,34 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 	}
 	opts.Name = name
 
-	tree, err := m.images.Tree(ctx, opts.Image)
+	golden, err := m.images.Image(ctx, opts.Image)
 	if err != nil {
 		return nil, err
 	}
+	goldenInfo, err := os.Stat(golden)
+	if err != nil {
+		return nil, fmt.Errorf("stat base image: %w", err)
+	}
+	if opts.Disk < goldenInfo.Size() {
+		return nil, fmt.Errorf("requested disk %s is smaller than the base image %s (%s): pass a larger --disk",
+			config.DiskSize(opts.Disk).String(), opts.Image, config.DiskSize(goldenInfo.Size()).String())
+	}
 	diskPath := m.diskPath(name)
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0o755); err != nil {
+		return nil, err
+	}
 	progress.From(ctx).Step("creating the disk image of %s (%s)", name, config.DiskSize(opts.Disk).String())
-	if err := image.PackExt4(ctx, tree, diskPath, opts.Disk); err != nil {
+	// copyImage prefers a CoW reflink and falls back to a full copy, so this
+	// stays fast on btrfs and on reflink enabled XFS.
+	if err := copyImage(ctx, golden, diskPath); err != nil {
 		os.Remove(diskPath)
 		return nil, fmt.Errorf("create disk image: %w", err)
+	}
+	if opts.Disk != goldenInfo.Size() {
+		if err := m.resizeDiskImage(ctx, diskPath, opts.Disk); err != nil {
+			os.Remove(diskPath)
+			return nil, fmt.Errorf("create disk image: %w", err)
+		}
 	}
 	vm, err := m.finish(ctx, diskPath, opts)
 	if err != nil {
