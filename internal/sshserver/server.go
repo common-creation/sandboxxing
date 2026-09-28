@@ -44,6 +44,9 @@ type Server struct {
 	// Listener, when set, is used instead of opening cfg.SSHAddr. It allows
 	// tests to select an ephemeral port.
 	Listener net.Listener
+	// sftpRun, when non-nil, replaces the container sftp-server invocation.
+	// Tests set it to serve the host sftp-server without needing nspawn.
+	sftpRun func(ctx context.Context, name, dir string, env []string, ch ssh.Channel) (int, error)
 }
 
 // New prepares the server, loading or generating the host key and the shared

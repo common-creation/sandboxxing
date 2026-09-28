@@ -348,6 +348,27 @@ ssh <name>@<host> -p 2222 uname -a    # 1 コマンド実行
 - コンテナ内の `sshd` は使いません。ホスト側の `nsenter` で
   namespaces に入るため、コンテナは起動していれば十分です。
 
+## ファイル転送 (`scp` / `sftp`)
+
+コンテナは **SFTP サブシステム**を話します。OpenSSH 9.0 以降の `sftp` と
+`scp`(既定で SFTP 方式)がそのまま使えます:
+
+```bash
+sftp demo@host -P 2222
+scp app.tar.gz demo@host:/root/
+scp demo@host:/root/app.tar.gz ./
+scp -r ./site demo@host:/srv/
+```
+
+- 停止中のコンテナは転送前に**オンデマンドで起動**します。
+- セッションはコンテナのホーム(`/root` 既定)で `root` として開始するため、
+  相対パスは対話ログインと同様に解決します。共有ディレクトリや `/tmp`、
+  シンボリックリンクも `nsenter` 経由でコンテナの namespaces 内で解決されます。
+- 転送はコンテナ内の `sftp-server`(イメージの `openssh` パッケージ)に
+  ブリッジされるため、専用クライアントは不要です。
+- 制御ユーザー(`sandbox@host`)の `sftp` は未対応です。背後に対応する
+  コンテナが無いためです。
+
 ## アーキテクチャ
 
 ```

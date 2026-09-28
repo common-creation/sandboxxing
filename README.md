@@ -355,6 +355,28 @@ ssh <name>@<host> -p 2222 uname -a    # run a single command
 - The container's own `sshd` is not used. The host's `nsenter` enters the
   namespaces, so the container only needs to be running.
 
+## File transfer (`scp` / `sftp`)
+
+Containers speak the **SFTP subsystem**, which is what OpenSSH 9.0 and later
+use for both `sftp` and `scp` (which defaults to SFTP):
+
+```bash
+sftp demo@host -P 2222
+scp app.tar.gz demo@host:/root/
+scp demo@host:/root/app.tar.gz ./
+scp -r ./site demo@host:/srv/
+```
+
+- Stopped containers are **started on demand** before the transfer.
+- The session starts in the container's home directory (`/root` by default)
+  and runs as `root`, so relative paths resolve like an interactive login.
+  Shares, `/tmp` mounts and symlinks resolve the same way because the transfer
+  runs in the container's namespaces via `nsenter`.
+- The transfer is bridged to `sftp-server` inside the container (from the
+  `openssh` package in the image), so no extra client is needed.
+- Control users (`sandbox@host`) cannot use `sftp`: there is no container
+  behind the name.
+
 ## Architecture
 
 ```

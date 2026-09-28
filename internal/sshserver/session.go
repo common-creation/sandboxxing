@@ -186,12 +186,18 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, ch ssh
 				var payload struct {
 					Name string
 				}
+				name := ""
 				if err := ssh.Unmarshal(req.Payload, &payload); err == nil {
+					name = payload.Name
 					session.mu.Lock()
 					session.subsys = payload.Name
 					session.mu.Unlock()
 				}
-				req.Reply(false, nil)
+				// OpenSSH 9.0 and later transfers files with SFTP, which
+				// `sftp` and modern `scp` request as subsystem "sftp".
+				// Accept it so the clients can proceed; anything else stays
+				// rejected as before.
+				req.Reply(name == sftpSubsystemName, nil)
 				once.Do(func() { close(start) })
 			default:
 				if req.WantReply {
@@ -214,6 +220,12 @@ func (s *Server) handleSession(ctx context.Context, conn *ssh.ServerConn, ch ssh
 	subsys := session.subsys
 	interactive := session.hasExec || session.shell
 	session.mu.Unlock()
+
+	if subsys == sftpSubsystemName {
+		s.handleSFTPSubsystem(ctx, session, ch, user)
+		ch.Close()
+		return
+	}
 
 	if subsys != "" || !interactive {
 		if subsys != "" {
