@@ -2,6 +2,7 @@ package sshserver
 
 import (
 	"context"
+	"io"
 	"sort"
 	"sync"
 
@@ -250,11 +251,23 @@ func (s *Server) watchSession(ctx context.Context, conn ssh.Conn, cancel context
 // runControl serves the command interface for a control user.
 func (s *Server) runControl(ctx context.Context, session *sessionRequest, ch ssh.Channel) {
 	rows, cols := session.size()
+	interactive := session.ptyEnabled()
+	out := io.Writer(ch)
+	errOut := io.Writer(ch.Stderr())
+	if interactive {
+		// The control session has no pseudo terminal, so the line
+		// discipline cannot turn the LF of the command output into CRLF.
+		// An interactive client has its terminal in raw mode and would
+		// keep the column on LF, which makes every line start where the
+		// previous one ended.
+		out = newCRLFWriter(out)
+		errOut = newCRLFWriter(errOut)
+	}
 	cio := &cli.IO{
 		In:   &stdio{ch: ch},
-		Out:  ch,
-		Err:  ch.Stderr(),
-		TTY:  session.ptyEnabled(),
+		Out:  out,
+		Err:  errOut,
+		TTY:  interactive,
 		Rows: rows,
 		Cols: cols,
 	}
@@ -270,7 +283,7 @@ func (s *Server) runControl(ctx context.Context, session *sessionRequest, ch ssh
 	}
 	argv, err := shlex(commandLine)
 	if err != nil {
-		s.fail(ch, err)
+		s.exitStatus(ch, s.failTo(out, err))
 		return
 	}
 	if len(argv) == 0 {
@@ -351,12 +364,18 @@ type notFoundError struct{ user string }
 func (e *notFoundError) Error() string { return "container " + e.user + " not found" }
 
 func (s *Server) fail(ch ssh.Channel, err error) {
+	s.exitStatus(ch, s.failTo(ch, err))
+}
+
+// failTo reports err on w and returns the exit status for it. A caller that
+// owns a wrapped output stream passes it here so that the message follows the
+// line ending convention of the session.
+func (s *Server) failTo(w io.Writer, err error) int {
 	if nf, ok := err.(*notFoundError); ok {
-		_, _ = ch.Write([]byte("sandboxxing: " + nf.Error() + "\n"))
-		_, _ = ch.Write([]byte("list containers with: ssh " + s.runner.Host() + " ls\n"))
-		s.exitStatus(ch, 127)
-		return
+		_, _ = io.WriteString(w, "sandboxxing: "+nf.Error()+"\n")
+		_, _ = io.WriteString(w, "list containers with: ssh "+s.runner.Host()+" ls\n")
+		return 127
 	}
-	_, _ = ch.Write([]byte("sandboxxing: " + err.Error() + "\n"))
-	s.exitStatus(ch, 1)
+	_, _ = io.WriteString(w, "sandboxxing: "+err.Error()+"\n")
+	return 1
 }
