@@ -23,6 +23,8 @@ demo@host's password:
 - イメージのビルドに **arch-install-scripts** の `pacstrap` を使用する。
 - 独立したホストシステムでの運用を前提とし、そのホスト上の nspawn
   コンテナはすべて sandboxxing のものとして扱う。
+- コンテナ自身がコンテナエンジン(Docker, Podman など)を動かせる。
+  `new --nested` か、ホスト全体向けの `nested` 設定で有効化する。
 - デーモンは **Go** で実装(`golang.org/x/crypto/ssh` による SSH サーバー)。
 
 ## 必要な環境
@@ -230,8 +232,8 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
-    [--comment=TEXT] [--tag=T] [--env K=V] [--setup-script=FILE]
-    [--prompt=TEXT] [--json]
+    [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
+    [--nested] [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
 - 名前を省略すると `sbx-xxxxxx` が自動生成されます。
@@ -239,6 +241,8 @@ new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
 - `--setup-script` は初回にコンテナ内で実行するスクリプトです。
   `/dev/stdin` を指定すると標準入力から読み込みます。
 - `--prompt` は作成直後にコンテナへ流し込む初期コマンドです。
+- `--nested` はそのコンテナ自身でコンテナエンジン(Docker, Podman など)を
+  動かせるようにします。詳細は後述の「ネストしたコンテナ」を参照してください。
 
 ```
 $ ssh sandbox new --cpu=4 --memory=16GB --tag=prod,web
@@ -283,11 +287,12 @@ restart <name>
 ### `cp` — 複製
 
 ```
-cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--json]
+cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nested] [--json]
 ```
 
 - 実行中のコンテナを複製することもできます(ディスクイメージをコピー)。
 - `--copy-tags` は既定で有効です。無効にする場合は `--copy-tags=false`。
+- 複製したコンテナは元の `nested` 設定を引き継ぎます。
 
 ### `resize` — リソース変更
 
@@ -421,6 +426,7 @@ scp -r ./site demo@host:/srv/
 | `dns` | (空) | コンテナに書き込むリゾルバ。空ならホストの resolv.conf を流用(ホスト専用の `127.0.0.53` は除外) |
 | `shares` | (空) | 全コンテナに bind mount するホストディレクトリ。パス文字列または `{"path","target","read_only"}` |
 | `tmp_size` | (空) | `/tmp` の扱い。空なら nspawn 既定の tmpfs(ホストメモリの10%)、サイズ/割合で変更、`"disk"` でコンテナイメージ上に保存 |
+| `nested` | `false` | 全コンテナで Docker などのコンテナエンジンを**コンテナ内で**動かせるようにする(`new --nested` で個別指定)。nspawn の seccomp を `bpf` と keyring 向けに緩める |
 | `image_dir` | `<data_dir>/images` | golden ext4 イメージのキャッシュ(`new` 時に reflink コピー) |
 | `image` | `arch` | 既定イメージ名 |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman ミラー |
@@ -518,6 +524,63 @@ ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
 絶対値とパーセント指定は nspawn が作成したマウントの上に重ねて適用される
 ため、起動中のコンテナも次回起動時に反映されます。
 
+## ネストしたコンテナ (サンドボックス内の Docker)
+
+Docker や Podman などのコンテナエンジンを **sandbox コンテナの中で**動かせ
+ます。ホスト全体で有効にする場合:
+
+```json
+{
+  "nested": true
+}
+```
+
+コンテナ単位で有効にする場合:
+
+```bash
+ssh sandbox@host -p 2222 new --name=dockerbox --nested
+```
+
+いずれの場合も、sandboxxing は次の設定でコンテナを起動します:
+
+- **seccomp フィルタで `bpf` を許可**します。cgroup v2 のホストではデバイス
+  コントローラが eBPF プログラムで実現されており、`runc` はコンテナごとに
+  それを導入するため `bpf()` を呼びます。`systemd-nspawn` は既定でこの
+  システムコールを塞ぐため、許可するまで `docker run` は必ず
+  `bpf_prog_query(BPF_CGROUP_DEVICE): operation not permitted` で失敗します。
+  ネストを可能にするのはこの設定です。
+- **keyring 関連のシステムコール (`@keyring`) を許可**します(一部のイメージが
+  利用します)。
+- ホストに `/dev/fuse` があれば**パススルー**し、既定の `overlay2` が使えない
+  場合のストレージドライバとして `fuse-overlayfs` を選べるようにします。
+
+コンテナ側にコンテナエンジンが入っている必要があります。イメージは
+`image_packages` から作られるので、ここに追加します(後から `pacman` で
+入れても構いません):
+
+```json
+{
+  "nested": true,
+  "image_packages": ["base", "systemd", "openssh", "sudo", "vim", "iproute2", "iputils", "dnsutils", "net-tools", "git", "curl", "ca-certificates", "docker"]
+}
+```
+
+```bash
+ssh dockerbox@host -p 2222
+[root@dockerbox /]# systemctl enable --now docker
+[root@dockerbox /]# docker run --rm hello-world
+```
+
+- 動くのは rootful なエンジンです。rootless エンジンは sandbox 内では
+  サポートしません。
+- コンテナのルートは ext4 イメージなので、Docker 既定の `overlay2` ストレージ
+  ドライバが使えます。`vfs` にフォールバックする場合は `fuse-overlayfs` を
+  入れて選択してください。
+- 既存のコンテナは次回起動まで nspawn 既定の seccomp フィルタのままです。
+  ホスト全体で `nested` を有効にしてからデーモンを再起動
+  (`systemctl restart sandboxxing`)し、既存コンテナには `restart <name>` で
+  反映させてください。
+
 ## コンテナ内の DNS
 
 コンテナは `systemd-resolved` を動かしません。デーモンが `/etc/resolv.conf`
@@ -545,6 +608,10 @@ ssh sandbox@host -p 2222 new --name=demo --share=/srv/data:/data:ro
 - コンテナは user namespace を使わずに起動します(`-U` を付けません)。
   ホスト側の分離は nspawn の namespaces と cgroups に依存します。
   信頼できないワークロードを動かす場合は、追加の分離設定を検討して
+  ください。
+- `nested` は nspawn の seccomp フィルタを緩めます。`bpf` と keyring の
+  システムコールは名前空間で隔離されないため、ホストカーネル上でも許可
+  されます。自前のエンジンを動かす必要があるコンテナにのみ有効化して
   ください。
 - コンテナ名はユーザー名として使われるため、`admin_users` と同じ名前の
   コンテナは作成できません。

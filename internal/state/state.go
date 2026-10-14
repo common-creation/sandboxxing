@@ -46,6 +46,10 @@ type VM struct {
 	// Shares are the host directories that this container mounts, on top of
 	// the ones configured for the whole host.
 	Shares []config.Share `json:"shares,omitempty"`
+	// Nested allows this container to run its own container engine (Docker,
+	// Podman, ...). It is set by `new --nested`; the host wide `nested` option
+	// enables it for every container.
+	Nested bool `json:"nested,omitempty"`
 }
 
 // State is the whole persisted state file.

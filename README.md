@@ -26,6 +26,8 @@ demo@host's password:
 - Images are built with `pacstrap` from **arch-install-scripts**.
 - It is designed to run on a dedicated host system: every nspawn container on
   that host is considered to belong to sandboxxing.
+- Containers can run their own container engines (Docker, Podman, ...) with
+  `new --nested` or the host wide `nested` option.
 - The daemon is written in **Go** (SSH server powered by
   `golang.org/x/crypto/ssh`).
 
@@ -238,8 +240,8 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
-    [--comment=TEXT] [--tag=T] [--env K=V] [--setup-script=FILE]
-    [--prompt=TEXT] [--json]
+    [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
+    [--nested] [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
 - If the name is omitted, `sbx-xxxxxx` is generated automatically.
@@ -247,6 +249,8 @@ new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
 - `--setup-script` is a script executed inside the container on first boot.
   Specify `/dev/stdin` to read it from standard input.
 - `--prompt` is an initial command fed into the container right after creation.
+- `--nested` lets the container run its own container engine (Docker, Podman,
+  ...). See [Nested containers](#nested-containers-docker-inside-a-sandbox).
 
 ```
 $ ssh sandbox new --cpu=4 --memory=16GB --tag=prod,web
@@ -291,11 +295,12 @@ restart <name>
 ### `cp` — copy
 
 ```
-cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--json]
+cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nested] [--json]
 ```
 
 - You can also copy a running container (the disk image is copied).
 - `--copy-tags` is enabled by default. Use `--copy-tags=false` to disable it.
+- A copy keeps the `nested` setting of its source.
 
 ### `resize` — change resources
 
@@ -429,6 +434,7 @@ scp -r ./site demo@host:/srv/
 | `dns` | (empty) | Resolvers written to the containers. Empty reuses the host resolvers, skipping ones that only run on the host (`127.0.0.53`) |
 | `shares` | (empty) | Host directories bind mounted into every container: a path string or `{"path", "target", "read_only"}` |
 | `tmp_size` | (empty) | `/tmp` handling: empty keeps the nspawn default tmpfs (10% of the host memory), a size or percentage resizes it, and `"disk"` stores `/tmp` on the container image |
+| `nested` | `false` | Enables Docker and other container engines **inside** every container (`new --nested` opts in a single container). Relaxes nspawn's seccomp filter for `bpf` and the keyring |
 | `image_dir` | `<data_dir>/images` | Cache of golden ext4 images (reflink copied on `new`) |
 | `image` | `arch` | Default image name |
 | `mirror` | `https://geo.mirror.pkgbuild.com/$repo/os/$arch` | pacman mirror |
@@ -532,6 +538,61 @@ The absolute and percentage values are applied as an extra mount on top of the
 one nspawn creates, so a running container picks the setting up on its next
 start.
 
+## Nested containers (Docker inside a sandbox)
+
+Docker, Podman and other container engines can run **inside** a sandbox
+container. Enable it for the whole host:
+
+```json
+{
+  "nested": true
+}
+```
+
+or for a single container:
+
+```bash
+ssh sandbox@host -p 2222 new --name=dockerbox --nested
+```
+
+Either way sandboxxing starts the container with what a nested engine needs:
+
+- **`bpf` is allowed through the seccomp filter.** On a cgroup v2 host the
+  device controller is enforced by an eBPF program that `runc` installs for
+  every container. `systemd-nspawn` blocks that syscall by default, so every
+  `docker run` fails with
+  `bpf_prog_query(BPF_CGROUP_DEVICE): operation not permitted` until it is
+  permitted. This one setting is what makes nested engines work.
+- **The keyring syscalls are allowed** (`@keyring`), which some images use.
+- **`/dev/fuse` is passed through** when the host provides it, so
+  `fuse-overlayfs` can be selected as the storage driver when the default
+  `overlay2` is not usable.
+
+The container still needs a container engine installed. Images are built from
+`image_packages`, so add it there (or install it later with `pacman`):
+
+```json
+{
+  "nested": true,
+  "image_packages": ["base", "systemd", "openssh", "sudo", "vim", "iproute2", "iputils", "dnsutils", "net-tools", "git", "curl", "ca-certificates", "docker"]
+}
+```
+
+```bash
+ssh dockerbox@host -p 2222
+[root@dockerbox /]# systemctl enable --now docker
+[root@dockerbox /]# docker run --rm hello-world
+```
+
+- Rootful engines work; rootless engines are not supported inside a sandbox.
+- The container root is an ext4 image, so Docker's default `overlay2` storage
+  driver works. If it falls back to `vfs`, install `fuse-overlayfs` and select
+  it instead.
+- Existing containers keep nspawn's default seccomp filter until they are
+  started again. After enabling `nested` host wide and restarting the daemon
+  (`systemctl restart sandboxxing`), run `restart <name>` to apply it to a
+  container that already exists.
+
 ## DNS inside the containers
 
 Containers do not run `systemd-resolved`; they get a plain `/etc/resolv.conf`
@@ -560,6 +621,9 @@ Existing containers pick the setting up the next time they start.
 - Containers run without a user namespace (`-U` is not used). Host isolation
   relies on nspawn namespaces and cgroups. If you run untrusted workloads,
   consider additional isolation.
+- `nested` relaxes nspawn's seccomp filter: `bpf` and the keyring syscalls are
+  not namespaced, so they are allowed on the host kernel as well. Only enable
+  it for containers that really need to run their own engine.
 - Container names are used as usernames, so you cannot create a container with
   the same name as one in `admin_users`.
 - **Public key authentication is recommended**. The password is a single

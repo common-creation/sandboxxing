@@ -28,6 +28,7 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		"json":         {kind: flagBool},
 		"no-start":     {kind: flagBool},
 		"prompt":       {kind: flagString},
+		"nested":       {kind: flagBool},
 	})
 	if err != nil {
 		return r.fail(sess, err)
@@ -41,6 +42,7 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		Image:   opts.str("image"),
 		Comment: opts.str("comment"),
 		Tags:    opts.strs("tag"),
+		Nested:  opts.bool("nested"),
 	}
 	if create.CPU, err = r.parseCPU(opts.str("cpu")); err != nil {
 		return r.fail(sess, err)
@@ -157,6 +159,7 @@ func (r *Runner) cmdCopy(ctx context.Context, args []string, sess *IO) int {
 		"json":      {kind: flagBool},
 		"copy-tags": {kind: flagBool, hasValue: true, def: "true"},
 		"comment":   {kind: flagString},
+		"nested":    {kind: flagBool},
 	})
 	if err != nil {
 		return r.fail(sess, err)
@@ -167,6 +170,7 @@ func (r *Runner) cmdCopy(ctx context.Context, args []string, sess *IO) int {
 	copyOpts := vm.Options{
 		Image:   r.cfg.Image,
 		Comment: opts.str("comment"),
+		Nested:  opts.bool("nested"),
 	}
 	if len(opts.positional) == 2 {
 		copyOpts.Name = opts.positional[1]

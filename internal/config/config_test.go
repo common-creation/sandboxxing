@@ -169,6 +169,26 @@ func TestAuthorizedKeysConfiguration(t *testing.T) {
 	}
 }
 
+// TestNestedOption verifies the host wide switch that lets containers run
+// their own container engine. It is off unless the configuration asks for it.
+func TestNestedOption(t *testing.T) {
+	if Default().Nested {
+		t.Error("nested must be off by default")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"data_dir":"`+dir+`","nested":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Nested {
+		t.Error("nested was not read from the configuration")
+	}
+}
+
 // TestBothAuthMethodsDisabledIsRejected prevents a configuration that locks
 // everyone out.
 func TestBothAuthMethodsDisabledIsRejected(t *testing.T) {

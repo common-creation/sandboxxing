@@ -39,6 +39,43 @@ func New(cfg *config.Config, log *slog.Logger) *Nspawn {
 // Unit returns the systemd unit name of a container.
 func Unit(name string) string { return unitPrefix + name }
 
+// fuseDevice is the host device handed to nested containers so that
+// fuse-overlayfs (a storage driver that works inside nspawn) can run.
+const fuseDevice = "/dev/fuse"
+
+// nested reports whether a container may run its own container engine: either
+// the whole host enables it with the "nested" option or the container was
+// created with --nested.
+func (n *Nspawn) nested(vm *state.VM) bool {
+	return n.cfg.Nested || vm.Nested
+}
+
+// nestedArgs returns the extra systemd-nspawn arguments that let a container
+// run Docker or another container engine. systemd-nspawn's seccomp filter
+// blocks bpf() by default, but runc calls it to install the cgroup v2 device
+// controller, so every nested container start fails without this. The keyring
+// syscalls are needed by images that use the kernel keyring.
+func nestedArgs() []string {
+	args := []string{
+		"--system-call-filter=@keyring",
+		"--system-call-filter=bpf",
+	}
+	// A nested engine can be told to use fuse-overlayfs when its default
+	// overlay2 driver is not usable, which needs /dev/fuse. It is only passed
+	// through when the host provides it, so a host without the fuse module
+	// can still start the container.
+	if fuseAvailable() {
+		args = append(args, "--bind="+fuseDevice)
+	}
+	return args
+}
+
+// fuseAvailable reports whether the host exposes /dev/fuse.
+func fuseAvailable() bool {
+	_, err := os.Stat(fuseDevice)
+	return err == nil
+}
+
 // Running reports whether the container is currently running.
 func (n *Nspawn) Running(ctx context.Context, name string) bool {
 	out, err := n.systemctl(ctx, "is-active", Unit(name))
@@ -112,6 +149,12 @@ func (n *Nspawn) startArgs(vm *state.VM, imagePath string) []string {
 		// variable belongs to the unit, so it is passed to systemd-run.
 		args = append(args, "-E", "SYSTEMD_NSPAWN_TMPFS_TMP=0")
 	}
+	// A nested container runs its own engine, which needs to open /dev/fuse
+	// (fuse-overlayfs). nspawn's device policy is closed by default, so the
+	// device has to be allowed as well as passed through.
+	if n.nested(vm) && fuseAvailable() {
+		args = append(args, "-p", "DeviceAllow="+fuseDevice+" rwm")
+	}
 	args = append(args,
 		"systemd-nspawn",
 		"--quiet",
@@ -127,6 +170,9 @@ func (n *Nspawn) startArgs(vm *state.VM, imagePath string) []string {
 		"--link-journal=no",
 		"--console=passive",
 	)
+	if n.nested(vm) {
+		args = append(args, nestedArgs()...)
+	}
 	if n.cfg.TmpSize != "" && !strings.EqualFold(n.cfg.TmpSize, config.TmpSizeDisk) {
 		// A custom mount on top of the one nspawn creates raises or lowers
 		// the limit. An empty value keeps the nspawn default: a tmpfs sized

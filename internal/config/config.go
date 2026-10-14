@@ -80,6 +80,15 @@ type Config struct {
 	// on the container's own disk image and is limited only by its size.
 	TmpSize string `json:"tmp_size"`
 
+	// Nested lets containers run their own container engine (Docker, Podman,
+	// ...). It opens systemd-nspawn's seccomp filter for the syscalls a nested
+	// engine needs: bpf() is required by runc to install the cgroup v2 device
+	// controller, and the keyring syscalls are used by some images. The host
+	// /dev/fuse is also passed through, when present, so that fuse-overlayfs
+	// can be used as the storage driver. A container can also opt in with
+	// `new --nested`.
+	Nested bool `json:"nested"`
+
 	// ImageDir is where golden ext4 images built by pacstrap are cached.
 	// A container is created by reflink copying the golden image.
 	ImageDir string `json:"image_dir"`

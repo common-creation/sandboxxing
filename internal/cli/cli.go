@@ -159,13 +159,14 @@ Commands:
         list containers
   new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
       [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-      [--setup-script=FILE] [--json]
-        create and boot a container (--share mounts a host directory)
+      [--nested] [--setup-script=FILE] [--json]
+        create and boot a container (--share mounts a host directory,
+        --nested allows Docker inside the container)
   rm <name>... [--json]
         remove containers
   restart <name> [--json]
         reboot a container
-  cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--json]
+  cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nested] [--json]
         copy a container
   resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--json]
         change the resource limits (disk can only grow)
@@ -293,6 +294,9 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 			rendered = append(rendered, s.String())
 		}
 		fmt.Fprintf(sess.Out, "shares:    %s\n", strings.Join(rendered, ", "))
+	}
+	if r.cfg.Nested || info.VM.Nested {
+		fmt.Fprintf(sess.Out, "nested:    true\n")
 	}
 	if info.Running {
 		fmt.Fprintf(sess.Out, "uptime:    %s\n", humanDuration(info.Uptime))

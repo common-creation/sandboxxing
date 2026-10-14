@@ -702,5 +702,26 @@ func (m *Manager) Check(ctx context.Context) []Checkable {
 	} else {
 		checks = append(checks, Checkable{Name: "loop devices", OK: true, Detail: "/dev/loop-control present", Critical: true})
 	}
+	// Informational: nested containers (Docker inside a sandbox) need cgroup v2
+	// and benefit from /dev/fuse. Neither is required for plain containers, so
+	// the check never fails the host.
+	checks = append(checks, Checkable{Name: "nested containers", OK: true, Detail: nestedSupport()})
 	return checks
+}
+
+// nestedSupport summarises the host facilities that a container needs to run
+// its own container engine.
+func nestedSupport() string {
+	var notes []string
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+		notes = append(notes, "cgroup v2")
+	} else {
+		notes = append(notes, "no cgroup v2 (Docker inside a container needs it)")
+	}
+	if _, err := os.Stat("/dev/fuse"); err == nil {
+		notes = append(notes, "/dev/fuse present")
+	} else {
+		notes = append(notes, "/dev/fuse missing (fuse-overlayfs unavailable)")
+	}
+	return strings.Join(notes, "; ")
 }

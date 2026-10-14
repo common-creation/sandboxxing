@@ -10,6 +10,7 @@
   "dns": [],
   "shares": [],
   "tmp_size": "",
+  "nested": false,
   "image": "arch",
   "mirror": "https://geo.mirror.pkgbuild.com/$repo/os/$arch",
   "arch": "x86_64",

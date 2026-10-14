@@ -63,6 +63,10 @@ type Options struct {
 	// Shares are extra host directories for this container, on top of the
 	// ones configured with the "shares" option.
 	Shares []config.Share
+	// Nested allows the container to run its own container engine (Docker,
+	// Podman, ...). The host wide "nested" option enables it for every
+	// container, so this only has to be set to opt in individually.
+	Nested bool
 }
 
 // Create builds a new container: the cached golden ext4 image is reflink
@@ -146,6 +150,8 @@ func (m *Manager) Copy(ctx context.Context, src string, opts Options) (*state.VM
 	} else {
 		opts.Shares = append([]config.Share{}, source.Shares...)
 	}
+	// A nested container stays nested when it is copied.
+	opts.Nested = opts.Nested || source.Nested
 	name, err := m.reserveName(opts.Name)
 	if err != nil {
 		return nil, err
@@ -203,6 +209,7 @@ func (m *Manager) finish(ctx context.Context, diskPath string, opts Options) (*s
 		Tags:      opts.Tags,
 		Env:       opts.Env,
 		Shares:    opts.Shares,
+		Nested:    opts.Nested,
 		IP:        ip,
 		NetConfig: state.NetConfigVersion,
 	}
