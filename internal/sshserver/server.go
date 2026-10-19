@@ -47,6 +47,11 @@ type Server struct {
 	// sftpRun, when non-nil, replaces the container sftp-server invocation.
 	// Tests set it to serve the host sftp-server without needing nspawn.
 	sftpRun func(ctx context.Context, name, dir string, env []string, ch ssh.Channel) (int, error)
+
+	// conns holds the open connections of each container, so that they can
+	// be closed before the disk image of the container is worked on.
+	connsMu sync.Mutex
+	conns   map[string]map[*ssh.ServerConn]struct{}
 }
 
 // New prepares the server, loading or generating the host key and the shared
@@ -113,7 +118,48 @@ func New(cfg *config.Config, log *slog.Logger, vms *vm.Manager, st *state.State,
 		}
 	}
 	s.sshConf.AddHostKey(hostKey)
+	vms.SetDisconnect(s.disconnectContainer)
 	return s, nil
+}
+
+// trackConn records an open connection of a container.
+func (s *Server) trackConn(name string, conn *ssh.ServerConn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	if s.conns == nil {
+		s.conns = map[string]map[*ssh.ServerConn]struct{}{}
+	}
+	if s.conns[name] == nil {
+		s.conns[name] = map[*ssh.ServerConn]struct{}{}
+	}
+	s.conns[name][conn] = struct{}{}
+}
+
+// untrackConn forgets a connection recorded with trackConn.
+func (s *Server) untrackConn(name string, conn *ssh.ServerConn) {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	delete(s.conns[name], conn)
+	if len(s.conns[name]) == 0 {
+		delete(s.conns, name)
+	}
+}
+
+// disconnectContainer closes every open connection of a container and returns
+// how many were closed. Closing a connection cancels its sessions, which kills
+// the processes they started inside the container and ends port forwards.
+func (s *Server) disconnectContainer(name string) int {
+	s.connsMu.Lock()
+	conns := make([]*ssh.ServerConn, 0, len(s.conns[name]))
+	for conn := range s.conns[name] {
+		conns = append(conns, conn)
+	}
+	s.connsMu.Unlock()
+	for _, conn := range conns {
+		s.log.Info("closing connection", "user", conn.User(), "remote", conn.RemoteAddr().String())
+		_ = conn.Close()
+	}
+	return len(conns)
 }
 
 // permissions builds the permissions attached to an authenticated session.
@@ -182,6 +228,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	}
 	defer sshConn.Close()
 	s.log.Info("session started", "user", sshConn.User(), "remote", sshConn.RemoteAddr().String())
+	if name, ok := s.containerFor(sshConn.User()); ok {
+		s.trackConn(name, sshConn)
+		defer s.untrackConn(name, sshConn)
+	}
 
 	// Port forwarding lives on the same connection: the global requests
 	// carry the remote forwards and the channels carry both directions.

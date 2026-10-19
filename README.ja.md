@@ -304,6 +304,9 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
   `MemoryMax`) として即時反映されます。
 - ディスクは縮小できません。拡張はコンテナを停止し、`e2fsck` と
   `resize2fs` でイメージ内のファイルシステムを成長させます。
+- ディスクの拡張中は、そのコンテナへの SSH 接続(ログイン、SFTP、ポート
+  フォワード)を切断し、完了するまで新しい接続は
+  `container <name> is being resized, try again later` で拒否します。
 
 ### `stat` — 状態と使用量
 

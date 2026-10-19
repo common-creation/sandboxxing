@@ -466,3 +466,62 @@ func dialWithKey(t *testing.T, addr, user string, signer ssh.Signer) (*ssh.Clien
 		Timeout:         5 * time.Second,
 	})
 }
+
+func TestDisconnectContainerClosesItsConnections(t *testing.T) {
+	srv, addr := newTestServer(t)
+	if err := srv.state.Add(&state.VM{
+		Name:   "demo",
+		Image:  "arch",
+		CPU:    1,
+		Memory: 1 << 30,
+		Disk:   1 << 30,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	container, err := dial(t, addr, "demo", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer container.Close()
+	control, err := dial(t, addr, "sandbox", "test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	// The server registers the connection right after its handshake, which
+	// can finish shortly after the client returned.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.connsMu.Lock()
+		n := len(srv.conns["demo"])
+		srv.connsMu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("container connection not tracked (%d)", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if n := srv.disconnectContainer("demo"); n != 1 {
+		t.Errorf("disconnectContainer closed %d connections, want 1", n)
+	}
+	waited := make(chan struct{})
+	go func() {
+		_ = container.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("container connection is still open")
+	}
+	if _, _, err := control.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+		t.Errorf("control connection was closed too: %v", err)
+	}
+	if n := srv.disconnectContainer("other"); n != 0 {
+		t.Errorf("disconnectContainer of an unknown container closed %d", n)
+	}
+}

@@ -312,6 +312,9 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
   (`CPUQuota`, `MemoryMax`).
 - Disks cannot be shrunk. Growing stops the container and expands the
   filesystem inside the image with `e2fsck` and `resize2fs`.
+- While the disk grows, the SSH connections of the container (logins, SFTP and
+  port forwards) are closed, and new connections are refused with
+  `container <name> is being resized, try again later` until it is back.
 
 ### `stat` — status and usage
 

@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/common-creation/sandboxxing/internal/backend"
@@ -36,6 +37,16 @@ type Manager struct {
 	images  *image.Builder
 	backend *backend.Nspawn
 	host    *host.Manager
+
+	// mu guards the fields below, which coordinate offline operations on
+	// the disk images with the on-demand start of the containers.
+	mu sync.Mutex
+	// locks holds the startLock of each container.
+	locks map[string]*sync.Mutex
+	// busy maps a container under an offline operation to the operation.
+	busy map[string]string
+	// disconnect closes the SSH connections of a container.
+	disconnect func(name string) int
 }
 
 // New creates the operation manager.
@@ -277,6 +288,12 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
 	}
+	l := m.startLock(name)
+	l.Lock()
+	defer l.Unlock()
+	if err := m.checkIdle(name); err != nil {
+		return err
+	}
 	if err := m.backend.Restart(ctx, vm, m.diskPath(name)); err != nil {
 		return err
 	}
@@ -301,11 +318,24 @@ func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk
 		return fmt.Errorf("disk can only grow: current size is %s", config.DiskSize(vm.Disk).String())
 	}
 
-	wasRunning := m.backend.Running(ctx, name)
 	diskGrew := disk > vm.Disk
+	if diskGrew {
+		// Growing the disk works on the image offline. Logins are closed
+		// and on-demand starts refused until the container is back.
+		done, err := m.beginMaintenance(ctx, name, "resized")
+		if err != nil {
+			return err
+		}
+		defer done()
+	}
+
+	wasRunning := m.backend.Running(ctx, name)
 	if diskGrew {
 		progress.From(ctx).Step("growing the disk of %s to %s", name, config.DiskSize(disk).String())
 		if err := m.backend.Stop(ctx, name); err != nil {
+			return err
+		}
+		if err := waitImageReleased(ctx, m.diskPath(name)); err != nil {
 			return err
 		}
 		if err := m.resizeDiskImage(ctx, m.diskPath(name), disk); err != nil {
@@ -404,6 +434,12 @@ func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
 	}
+	l := m.startLock(name)
+	l.Lock()
+	defer l.Unlock()
+	if err := m.checkIdle(name); err != nil {
+		return err
+	}
 	// A container created by an older release is updated even while it is
 	// running, so that the fix reaches it without an explicit restart.
 	if vm.NetConfig < state.NetConfigVersion {
@@ -471,6 +507,9 @@ func (m *Manager) refreshNetConfig(ctx context.Context, vm *state.VM) error {
 		if err := m.backend.Stop(ctx, vm.Name); err != nil {
 			return err
 		}
+	}
+	if err := waitImageReleased(ctx, m.diskPath(vm.Name)); err != nil {
+		return err
 	}
 	if err := m.prepareDisk(ctx, m.diskPath(vm.Name), vm.Name, vm.IP, vm.Env); err != nil {
 		return err
