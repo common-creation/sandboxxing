@@ -693,6 +693,11 @@ aws lambda-microvms list-managed-microvm-image-versions \
 make cdk-deploy BASE_IMAGE_VERSION=<version>
 ```
 
+The stack names no account or region. It is deployed to those of the AWS
+profile in use (`AWS_PROFILE`, `AWS_REGION`), and CloudFormation picks the
+first two availability zones of the region at deploy time. It can be deployed
+from any machine; the gateway server only needs the outputs.
+
 1. Attach the policy of the `DaemonPolicyArn` output to the IAM identity of
    the daemon.
 2. Merge the `DaemonConfig` output into `/etc/sandboxxing/config.json`.

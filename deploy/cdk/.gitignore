@@ -3,4 +3,6 @@ cdk.out/
 bin/*.js
 lib/*.js
 *.d.ts
+# Context lookups cache the account ID of whoever ran them. The stack makes
+# none, and this keeps a future one out of the repository.
 cdk.context.json

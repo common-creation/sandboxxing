@@ -677,6 +677,11 @@ aws lambda-microvms list-managed-microvm-image-versions \
 make cdk-deploy BASE_IMAGE_VERSION=<version>
 ```
 
+スタックにはアカウントもリージョンも書いていません。使用中の AWS プロファイル
+(`AWS_PROFILE`、`AWS_REGION`)のアカウントとリージョンにデプロイされ、AZ は
+デプロイ時に CloudFormation がそのリージョンの先頭 2 つを選びます。どのマシンから
+でもデプロイでき、ゲートウェイサーバーに必要なのは出力の値だけです。
+
 1. 出力 `DaemonPolicyArn` のポリシーを、デーモンが使う IAM ID にアタッチします。
 2. 出力 `DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。
 3. `sandboxxing -check` で認証情報を確認してから、デーモンを再起動します。
