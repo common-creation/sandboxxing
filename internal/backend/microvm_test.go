@@ -263,6 +263,9 @@ func TestAnnouncementAloneIsIgnored(t *testing.T) {
 func TestRemoveDeletesHomeAndResources(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
+	if err := f.b.Start(ctx, f.vm); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(f.home, "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -434,5 +437,20 @@ func TestMicroVMShares(t *testing.T) {
 		if err := b.CheckShares(shares); err == nil {
 			t.Errorf("CheckShares(%v) accepted", shares)
 		}
+	}
+}
+
+// TestMicroVMRemoveNeverStarted removes a container whose first MicroVM never
+// ran without starting one, which is how a failed create is cleaned up.
+func TestMicroVMRemoveNeverStarted(t *testing.T) {
+	f := newFixture(t)
+	if err := f.b.Remove(context.Background(), f.vm); err != nil {
+		t.Fatal(err)
+	}
+	if f.fake.RunCount() != 0 {
+		t.Errorf("%d MicroVMs were started to remove an unused container", f.fake.RunCount())
+	}
+	if len(f.fake.AccessPoints) != 0 || len(f.fake.Roles) != 0 {
+		t.Errorf("left behind %d access points and %d roles", len(f.fake.AccessPoints), len(f.fake.Roles))
 	}
 }

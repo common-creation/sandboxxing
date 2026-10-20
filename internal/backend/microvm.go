@@ -341,7 +341,9 @@ func (b *MicroVM) Remove(ctx context.Context, vm *state.VM) error {
 	if !ok {
 		return nil
 	}
-	if mv.AccessPointID != "" && mv.RoleARN != "" {
+	// A container that never ran a MicroVM has written nothing to its home
+	// directory, and starting one may be what failed when it was created.
+	if mv.AccessPointID != "" && mv.RoleARN != "" && mv.Generation > 0 {
 		progress.From(ctx).Step("deleting the home directory of %s", vm.Name)
 		if err := b.mountedHome(ctx, vm); err != nil {
 			return err
