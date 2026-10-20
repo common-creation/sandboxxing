@@ -165,8 +165,30 @@ func (c *MicroVMConfig) CheckShare(s Share) error {
 		return err
 	}
 	p := path.Clean(s.Path)
+	if err := checkAccessPointPath(p); err != nil {
+		return fmt.Errorf("share %q: %w", s.Path, err)
+	}
 	if p == c.HomeRoot || strings.HasPrefix(p, c.HomeRoot+"/") || strings.HasPrefix(c.HomeRoot, p+"/") {
 		return fmt.Errorf("share %q overlaps %s, which holds the home directories", s.Path, c.HomeRoot)
+	}
+	return nil
+}
+
+// checkAccessPointPath applies the rules of EFS for the root directory of an
+// access point. Only the directory on the file system is bound by them; the
+// mount target inside the VM may be any path, such as /root/.claude.
+func checkAccessPointPath(p string) error {
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	if len(parts) > 4 {
+		return errors.New("a directory of the file system has at most 4 levels")
+	}
+	for _, part := range parts {
+		if strings.HasPrefix(part, ".") {
+			return fmt.Errorf("a directory of the file system cannot start with '.' (%s); mount it at a dot directory with a target instead", part)
+		}
+		if strings.ContainsAny(part, "$#<>;`|&?{}^*\n") {
+			return fmt.Errorf("%q contains a character that EFS does not allow in a directory ($#<>;`|&?{}^*)", part)
+		}
 	}
 	return nil
 }

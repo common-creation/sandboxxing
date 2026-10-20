@@ -39,7 +39,8 @@ func (b *MicroVM) Shares(vm *state.VM) []config.Share {
 
 // CheckShares validates the shared directories of a container. Besides the
 // directories of the home directories, which are never shared, a share may
-// not be mounted over the home directory.
+// not be mounted over the home directory or above it. A target inside the
+// home directory, such as /root/.claude, is mounted after it.
 func (b *MicroVM) CheckShares(shares []config.Share) error {
 	seen := map[string]string{}
 	for _, share := range shares {
@@ -47,8 +48,8 @@ func (b *MicroVM) CheckShares(shares []config.Share) error {
 			return err
 		}
 		target := path.Clean(share.MountTarget())
-		if target == b.home || strings.HasPrefix(target, b.home+"/") || strings.HasPrefix(b.home, target+"/") {
-			return fmt.Errorf("share %s cannot be mounted at %s, which overlaps the home directory %s", share.Path, target, b.home)
+		if target == b.home || strings.HasPrefix(b.home, target+"/") {
+			return fmt.Errorf("share %s cannot be mounted at %s, which would hide the home directory %s", share.Path, target, b.home)
 		}
 		if previous, ok := seen[target]; ok {
 			return fmt.Errorf("shares %q and %q are both mounted at %s", previous, share.Path, target)

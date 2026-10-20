@@ -59,6 +59,8 @@ func TestMicroVMValidation(t *testing.T) {
 			c.MicroVM.HomeRoot = "/data/homes"
 			c.MicroVM.Shares = []Share{{Path: "/data"}}
 		}, "home directories"},
+		"dot directory share": {func(c *Config) { c.MicroVM.Shares = []Share{{Path: "/root/.claude"}} }, "cannot start with '.'"},
+		"deep share":          {func(c *Config) { c.MicroVM.Shares = []Share{{Path: "/a/b/c/d/e"}} }, "at most 4 levels"},
 		"shares at one target": {func(c *Config) {
 			c.MicroVM.Shares = []Share{{Path: "/a", Target: "/mnt"}, {Path: "/b", Target: "/mnt"}}
 		}, "both mounted"},

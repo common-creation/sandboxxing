@@ -675,7 +675,8 @@ directory of the file system, not of the host.
   "microvm": {
     "shares": [
       "/shared/data",
-      { "path": "/shared/tools", "target": "/opt/tools", "read_only": true }
+      { "path": "/shared/tools", "target": "/opt/tools", "read_only": true },
+      { "path": "/claude", "target": "/root/.claude" }
     ]
   }
 }
@@ -684,6 +685,12 @@ directory of the file system, not of the host.
 ```bash
 ssh sandbox@host -p 2222 new --backend=microvm --share=/shared/data:/data:ro
 ```
+
+- The directory on the file system follows the rules of EFS for access
+  points: at most 4 levels, no level starting with `.`, and none of
+  `` $#<>;`|&?{}^* ``. The target inside the VM may be any path, so a dot
+  directory such as `/root/.claude` is shared from a plain one such as
+  `/claude`.
 
 - The daemon creates one access point per directory, which every container
   that shares it uses, and grants the execution role of each container the
@@ -694,8 +701,8 @@ ssh sandbox@host -p 2222 new --backend=microvm --share=/shared/data:/data:ro
 - Files keep their owners, as on a bind mount; the directory is created as
   root with mode 0755.
 - The directory of the home directories (`efs_home_root`), anything below it
-  and anything above it cannot be shared, and a share cannot be mounted over
-  the home directory.
+  and anything above it cannot be shared. A share can be mounted inside the
+  home directory, but not over it or above it.
 - `rm` keeps the shared directories. `make cdk-destroy` deletes them with the
   file system.
 

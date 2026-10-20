@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -347,6 +348,14 @@ func (b *MicroVM) Remove(ctx context.Context, vm *state.VM) error {
 		progress.From(ctx).Step("deleting the home directory of %s", vm.Name)
 		if err := b.mountedHome(ctx, vm); err != nil {
 			return err
+		}
+		// The shared directories mounted inside the home directory are
+		// detached first: find does not cross into them, but it cannot
+		// delete their mount points either.
+		for _, share := range b.Shares(vm) {
+			if target := path.Clean(share.MountTarget()); strings.HasPrefix(target, b.home+"/") {
+				_, _ = b.Run(ctx, vm, Exec{Argv: []string{"umount", "-l", target}})
+			}
 		}
 		code, err := b.Run(ctx, vm, Exec{Argv: []string{"find", b.home, "-xdev", "-mindepth", "1", "-delete"}})
 		if err != nil {

@@ -431,12 +431,18 @@ func TestMicroVMShares(t *testing.T) {
 		{{Path: "/homes"}},
 		{{Path: "/homes/x"}},
 		{{Path: "/srv", Target: home}},
-		{{Path: "/srv", Target: home + "/srv"}},
+		{{Path: "/srv", Target: filepath.Dir(home)}},
 		{{Path: "/a"}, {Path: "/b", Target: "/shared/a"}},
+		{{Path: "/root/.claude"}},
+		{{Path: "/a/b/c/d/e"}},
 	} {
 		if err := b.CheckShares(shares); err == nil {
 			t.Errorf("CheckShares(%v) accepted", shares)
 		}
+	}
+	// A dot directory is a target inside the home directory.
+	if err := b.CheckShares([]config.Share{{Path: "/claude", Target: home + "/.claude"}}); err != nil {
+		t.Errorf("a share inside the home directory: %v", err)
 	}
 }
 

@@ -659,7 +659,8 @@ EFS ファイルシステム上のディレクトリを MicroVM 間で共有で�
   "microvm": {
     "shares": [
       "/shared/data",
-      { "path": "/shared/tools", "target": "/opt/tools", "read_only": true }
+      { "path": "/shared/tools", "target": "/opt/tools", "read_only": true },
+      { "path": "/claude", "target": "/root/.claude" }
     ]
   }
 }
@@ -668,6 +669,11 @@ EFS ファイルシステム上のディレクトリを MicroVM 間で共有で�
 ```bash
 ssh sandbox@host -p 2222 new --backend=microvm --share=/shared/data:/data:ro
 ```
+
+- ファイルシステム上のディレクトリには、EFS の access point の規則が適用されます。
+  4 階層まで、`.` で始まる階層は不可、`` $#<>;`|&?{}^* `` は使えません。VM 内の
+  マウント先には制限がないので、`/root/.claude` のようなドットディレクトリは、
+  `/claude` のような通常の名前のディレクトリをマウントして共有します。
 
 - デーモンはディレクトリごとに access point を 1 つ作り、そのディレクトリを
   共有するすべてのコンテナで使います。各コンテナの実行ロールには、その
@@ -678,7 +684,8 @@ ssh sandbox@host -p 2222 new --backend=microvm --share=/shared/data:/data:ro
 - ファイルの所有者は bind mount と同じようにそのまま保たれます。ディレクトリは
   root 所有、モード 0755 で作成されます。
 - ホームディレクトリを置くディレクトリ(`efs_home_root`)とその配下、その上位の
-  ディレクトリは共有できません。ホームディレクトリに重なる場所にもマウントできません。
+  ディレクトリは共有できません。共有はホームディレクトリの中にはマウントできますが、
+  ホームディレクトリそのものや、その上位にはマウントできません。
 - `rm` しても共有ディレクトリは残ります。`make cdk-destroy` ではファイル
   システムごと削除されます。
 
