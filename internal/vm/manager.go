@@ -374,6 +374,48 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	return nil
 }
 
+// Start boots a stopped container. A running one is left alone.
+func (m *Manager) Start(ctx context.Context, name string) error {
+	if err := m.EnsureStarted(ctx, name); err != nil {
+		return err
+	}
+	m.log.Info("started container", "name", name)
+	return nil
+}
+
+// Stop powers a container off and closes its SSH connections, which would
+// otherwise start it again with their next port forward. It stays stopped
+// until it is started or logged into again.
+func (m *Manager) Stop(ctx context.Context, name string) error {
+	vm, ok := m.state.Get(name)
+	if !ok {
+		return fmt.Errorf("container %q not found", name)
+	}
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return err
+	}
+	l := m.startLock(name)
+	l.Lock()
+	defer l.Unlock()
+	if err := m.checkIdle(name); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	disconnect := m.disconnect
+	m.mu.Unlock()
+	if disconnect != nil {
+		if n := disconnect(name); n > 0 {
+			progress.From(ctx).Step("closed %d SSH connection(s) to %s", n, name)
+		}
+	}
+	if err := b.Stop(ctx, vm); err != nil {
+		return err
+	}
+	m.log.Info("stopped container", "name", name)
+	return nil
+}
+
 // Resize changes the CPU, memory or disk allowance. The disk can only grow;
 // growth is applied offline with resize2fs.
 func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk int64) error {

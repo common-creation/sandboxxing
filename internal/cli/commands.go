@@ -134,6 +134,44 @@ func (r *Runner) cmdRemove(ctx context.Context, args []string, sess *IO) int {
 	return 0
 }
 
+func (r *Runner) cmdStart(ctx context.Context, args []string, sess *IO) int {
+	return r.eachContainer(ctx, args, sess, "start", "started", func(name string) error {
+		progress.From(ctx).Step("starting container %s", name)
+		return r.vms.Start(ctx, name)
+	})
+}
+
+func (r *Runner) cmdStop(ctx context.Context, args []string, sess *IO) int {
+	return r.eachContainer(ctx, args, sess, "stop", "stopped", func(name string) error {
+		progress.From(ctx).Step("stopping container %s", name)
+		return r.vms.Stop(ctx, name)
+	})
+}
+
+// eachContainer runs op on every named container, stopping at the first
+// failure, and reports the ones it handled.
+func (r *Runner) eachContainer(ctx context.Context, args []string, sess *IO, command, done string, op func(name string) error) int {
+	opts, err := parseFlags(args, map[string]flagSpec{"json": {kind: flagBool}})
+	if err != nil {
+		return r.fail(sess, err)
+	}
+	if len(opts.positional) == 0 {
+		return r.fail(sess, fmt.Errorf("usage: %s <name>...", command))
+	}
+	handled := make([]string, 0, len(opts.positional))
+	for _, name := range opts.positional {
+		if err := op(name); err != nil {
+			return r.fail(sess, err)
+		}
+		handled = append(handled, name)
+	}
+	if opts.bool("json") {
+		return r.writeJSON(sess, map[string]any{done: handled})
+	}
+	fmt.Fprintf(sess.Out, "%s %s\n", done, strings.Join(handled, ", "))
+	return 0
+}
+
 func (r *Runner) cmdRestart(ctx context.Context, args []string, sess *IO) int {
 	opts, err := parseFlags(args, map[string]flagSpec{"json": {kind: flagBool}})
 	if err != nil {

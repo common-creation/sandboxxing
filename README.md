@@ -291,6 +291,20 @@ ssh "$name@host" -p 2222
 rm <name>...
 ```
 
+### `start` / `stop` — start and stop
+
+```
+start <name>... [--json]
+stop <name>... [--json]
+```
+
+- Both work for either backend. `stop` closes the SSH connections of the
+  container (logins, SFTP and port forwards), so that a forward does not start
+  it again right away.
+- A stopped container also starts on the next login, as before. For a
+  MicroVM, `stop` terminates the MicroVM; the home directory is kept, and
+  `start` runs a new one.
+
 ### `restart` — restart
 
 ```

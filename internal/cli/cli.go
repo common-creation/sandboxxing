@@ -82,6 +82,10 @@ func (r *Runner) Run(ctx context.Context, argv []string, sess *IO) int {
 		return r.cmdNew(ctx, rest, sess)
 	case "rm", "delete", "remove":
 		return r.cmdRemove(ctx, rest, sess)
+	case "start":
+		return r.cmdStart(ctx, rest, sess)
+	case "stop":
+		return r.cmdStop(ctx, rest, sess)
 	case "restart", "reboot":
 		return r.cmdRestart(ctx, rest, sess)
 	case "cp", "copy":
@@ -170,6 +174,11 @@ Commands:
         after that long without an SSH connection, 0 never)
   rm <name>... [--json]
         remove containers
+  start <name>... [--json]
+        boot stopped containers
+  stop <name>... [--json]
+        power containers off and close their SSH connections (the next
+        login starts them again)
   restart <name> [--json]
         reboot a container
   cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nested] [--json]

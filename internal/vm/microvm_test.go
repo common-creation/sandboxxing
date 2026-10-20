@@ -238,3 +238,40 @@ func TestMicroVMAutoStopSetting(t *testing.T) {
 		t.Errorf("autostop for a systemd-nspawn container = %v", err)
 	}
 }
+
+// TestMicroVMStartStop stops a MicroVM on request, closing its connections,
+// and starts it again.
+func TestMicroVMStartStop(t *testing.T) {
+	m, fake, st := newMicroVMManager(t)
+	var closed []string
+	m.SetDisconnect(func(name string) int {
+		closed = append(closed, name)
+		return 1
+	})
+	ctx := context.Background()
+	if _, err := m.Create(ctx, Options{Name: "box"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Stop(ctx, "box"); err != nil {
+		t.Fatal(err)
+	}
+	if mv, _ := st.MicroVMOf("box"); mv.ID != "" {
+		t.Fatalf("MicroVM %s still recorded after stop", mv.ID)
+	}
+	if len(closed) != 1 || closed[0] != "box" {
+		t.Errorf("closed connections of %v, want box", closed)
+	}
+	// Stopping a stopped container does nothing.
+	if err := m.Stop(ctx, "box"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(ctx, "box"); err != nil {
+		t.Fatal(err)
+	}
+	if mv, _ := st.MicroVMOf("box"); mv.ID == "" || fake.RunCount() != 2 {
+		t.Errorf("not running after start: %+v, %d MicroVMs", mv, fake.RunCount())
+	}
+	if err := m.Stop(ctx, "missing"); err == nil {
+		t.Error("stopped a container that does not exist")
+	}
+}
