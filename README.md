@@ -241,7 +241,8 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
     [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-    [--nested] [--setup-script=FILE] [--prompt=TEXT] [--json]
+    [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+    [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
 - If the name is omitted, `sbx-xxxxxx` is generated automatically.
@@ -251,6 +252,10 @@ new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
 - `--prompt` is an initial command fed into the container right after creation.
 - `--nested` lets the container run its own container engine (Docker, Podman,
   ...). See [Nested containers](#nested-containers-docker-inside-a-sandbox).
+- `--backend=microvm` runs the container as an AWS Lambda MicroVM, and
+  `--autostop` sets how long it keeps running without an SSH connection
+  (default `30m`, `0` never stops it). See
+  [AWS Lambda MicroVM backend](#aws-lambda-microvm-backend).
 
 ```
 $ ssh sandbox new --cpu=4 --memory=16GB --tag=prod,web
@@ -315,6 +320,15 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
 - While the disk grows, the SSH connections of the container (logins, SFTP and
   port forwards) are closed, and new connections are refused with
   `container <name> is being resized, try again later` until it is back.
+
+### `edit` — change settings
+
+```
+edit <name> --autostop=DURATION [--json]
+```
+
+- Changes the autostop time of a MicroVM, such as `--autostop=2h`. `0` never
+  stops it. The new time applies to the current idle period.
 
 ### `stat` — status and usage
 
@@ -450,6 +464,8 @@ scp -r ./site demo@host:/srv/
 | `default_memory` | `2G` | Default memory for `new` |
 | `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+| `default_backend` | `nspawn` | backend of `new` when `--backend` is omitted (`nspawn` or `microvm`) |
+| `microvm` | (none) | settings of the MicroVM backend, see [AWS Lambda MicroVM backend](#aws-lambda-microvm-backend) |
 
 ## Port forwarding
 
@@ -595,6 +611,143 @@ ssh dockerbox@host -p 2222
   started again. After enabling `nested` host wide and restarting the daemon
   (`systemctl restart sandboxxing`), run `restart <name>` to apply it to a
   container that already exists.
+
+## AWS Lambda MicroVM backend
+
+A container can run as an
+[AWS Lambda MicroVM](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html)
+(a Firecracker VM) instead of with systemd-nspawn on this host. The backend is
+chosen per container:
+
+```bash
+ssh sandbox@host -p 2222 new --name=cloudbox --backend=microvm
+ssh cloudbox@host -p 2222        # logins, scp/sftp and ssh -L work as usual
+```
+
+### How it works
+
+- **The home directory lives on EFS.** A MicroVM ends after at most eight
+  hours and loses its disk. So each container gets its own EFS access point
+  (`/homes/<instance-id>`), which every MicroVM of the container mounts at
+  `/root`.
+- **A container moves to a new MicroVM at eight hours.** When Lambda
+  terminates a MicroVM, the agent inside receives the `/terminate` hook. It
+  tells the daemon, flushes the data and unmounts the home directory. The
+  daemon confirms the termination with Lambda and starts a new MicroVM that
+  mounts the same access point. If the daemon was down, the new MicroVM is
+  started when the daemon starts again or on the next login.
+- **A MicroVM without SSH connections is stopped (autostop).** The daemon,
+  which carries every SSH connection, stops the MicroVM of a container that
+  had no connection for its autostop time: 30 minutes unless `new
+  --autostop` or `edit --autostop` set another one, and never with `0`. A
+  connection resets the timer, and so does a command run with `ssh <name>`
+  from a control session. The next login starts a new MicroVM. The containers
+  are checked every 30 seconds, and a daemon restart starts the timer anew.
+- **An agent inside the VM** (`cmd/sandboxxing-agent`) serves commands,
+  terminals and port connections over WebSockets on the HTTPS endpoint of the
+  MicroVM. Requests are authenticated twice: with an endpoint token, which
+  only the daemon holds and which only opens the data port 8080, and with a
+  per-MicroVM secret.
+
+### Limitations
+
+- **A move to a new MicroVM interrupts the container for some tens of
+  seconds.** Running processes, changes to the root file system (packages
+  installed later, ...) and SSH connections do not survive it. Only `/root`
+  does. AWS sends no notice before the eight hours are up; the hook arrives
+  only at termination.
+- The size comes from the MicroVM image. `--cpu/--memory/--disk/--share/
+  --nested`, `cp` and `resize` are not available.
+- MicroVMs are ARM64 only and available in a few regions.
+- `rm` deletes the files of the home directory, the access point and the
+  execution role. It starts a MicroVM for a moment to delete the files.
+
+### Isolation
+
+The user of a sandbox is root inside the VM, so any credentials and mount
+operations in the VM are theirs to use. The following measures keep one
+container out of the home directories of the others:
+
+- **Each container has its own IAM execution role.** The role may only mount
+  through the container's own access point (an `elasticfilesystem:AccessPointArn`
+  condition) and write the container's own log stream. The daemon can only
+  create roles that carry a permissions boundary.
+- **The EFS file system policy contains only Deny statements.** They refuse
+  access without TLS and access that bypasses an access point. Because a
+  policy exists, anonymous mounts are refused as well.
+- **Access point paths use a random instance ID.** A container created again
+  under the same name never sees the files of the old one.
+- A fake termination notice sent from inside the VM causes no move unless
+  Lambda confirms the termination.
+
+### Setup
+
+The AWS resources are in the CDK stack in `deploy/cdk` (TypeScript). Every
+resource has `RemovalPolicy.DESTROY`, so `make cdk-destroy` removes
+everything, including the data of the home directories.
+
+```bash
+make cdk-install
+aws lambda-microvms list-managed-microvm-image-versions \
+  --image-identifier arn:aws:lambda:<region>:aws:microvm-image:al2023-1
+make cdk-deploy BASE_IMAGE_VERSION=<version>
+```
+
+1. Attach the policy of the `DaemonPolicyArn` output to the IAM identity of
+   the daemon.
+2. Merge the `DaemonConfig` output into `/etc/sandboxxing/config.json`.
+3. Check the credentials with `sandboxxing -check`, then restart the daemon.
+
+The daemon finds its credentials the usual AWS SDK way: the environment,
+`~/.aws` or an instance role.
+
+```json
+{
+  "default_backend": "nspawn",
+  "microvm": {
+    "region": "ap-northeast-1",
+    "images": { "al2023": { "arn": "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:sandboxxing" } },
+    "egress_network_connectors": ["arn:aws:lambda:ap-northeast-1:123456789012:network-connector:nc-..."],
+    "efs_file_system_id": "fs-...",
+    "permissions_boundary_arn": "arn:aws:iam::123456789012:policy/...",
+    "log_group": "/sandboxxing/microvms",
+    "maximum_duration": "8h"
+  }
+}
+```
+
+### Verified on AWS
+
+Checked in ap-northeast-1 in 2026-10.
+
+- **Verified**: efs-utils inside a MicroVM mounts with `tls,iam,accesspoint=`
+  using the execution role of the container. From the root user of another
+  sandbox, each of the following mounts was refused with `access denied`:
+  - the access point of another container
+  - the root of the file system without an access point
+  - an anonymous mount
+  - an NFS mount without TLS
+- **Verified**: at the maximum duration the `/terminate` hook arrives while
+  the WebSocket to the agent still works, so the daemon is notified. The
+  notice arrived about 20 seconds after the limit, and the move to a new
+  MicroVM took about 5 seconds.
+- **Verified**: the image is built with `INTERNET_EGRESS`, and a VPC connector
+  can still be passed at run time (internet access goes through the NAT).
+- **Verified**: an operator role that trusts `lambda.amazonaws.com` works for
+  the network connector. Creating the connector takes about 15 minutes.
+- **Verified**: `cdk destroy` removes every resource of the stack, together
+  with an access point and an execution role the daemon had left behind.
+- **Found**: the MicroVM endpoint closes a WebSocket that carried nothing for
+  60 seconds. The daemon pings every 20 seconds.
+- **Found**: running a MicroVM with a connector needs the undocumented
+  `lambda:PassNetworkConnector` permission. Tags passed to CreateAccessPoint
+  are authorised as `elasticfilesystem:TagResource` against the file system.
+- **Found**: a new execution role can be accepted by RunMicrovm and still fail
+  when the VM starts, as a role that cannot be assumed. The first start of a
+  container is retried.
+- **Not verified**: how idle suspension interacts with the WebSockets
+  (`idle_policy` is off by default), and whether CloudTrail data events record
+  the `runHookPayload`.
 
 ## DNS inside the containers
 

@@ -233,7 +233,8 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
     [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-    [--nested] [--setup-script=FILE] [--prompt=TEXT] [--json]
+    [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+    [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
 - 名前を省略すると `sbx-xxxxxx` が自動生成されます。
@@ -243,6 +244,10 @@ new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
 - `--prompt` は作成直後にコンテナへ流し込む初期コマンドです。
 - `--nested` はそのコンテナ自身でコンテナエンジン(Docker, Podman など)を
   動かせるようにします。詳細は後述の「ネストしたコンテナ」を参照してください。
+- `--backend=microvm` を指定すると、AWS Lambda MicroVM として動かします。
+  `--autostop` は、SSH 接続がない状態で動かし続ける時間です(既定は `30m`。
+  `0` で自動停止しません)。詳細は後述の「AWS Lambda MicroVM バックエンド」を
+  参照してください。
 
 ```
 $ ssh sandbox new --cpu=4 --memory=16GB --tag=prod,web
@@ -307,6 +312,15 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
 - ディスクの拡張中は、そのコンテナへの SSH 接続(ログイン、SFTP、ポート
   フォワード)を切断し、完了するまで新しい接続は
   `container <name> is being resized, try again later` で拒否します。
+
+### `edit` — 設定変更
+
+```
+edit <name> --autostop=DURATION [--json]
+```
+
+- MicroVM の autostop 時間を変更します(例: `--autostop=2h`)。`0` を指定すると
+  自動停止しません。新しい時間は、進行中の無接続時間にもそのまま適用されます。
 
 ### `stat` — 状態と使用量
 
@@ -442,6 +456,8 @@ scp -r ./site demo@host:/srv/
 | `default_memory` | `2G` | `new` の既定メモリ |
 | `default_disk` | `10G` | `new` の既定ディスク |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
+| `default_backend` | `nspawn` | `new` の既定バックエンド(`nspawn` / `microvm`) |
+| `microvm` | (なし) | MicroVM バックエンドの設定。[AWS Lambda MicroVM バックエンド](#aws-lambda-microvm-バックエンド)を参照 |
 
 ## ポートフォワーディング
 
@@ -583,6 +599,137 @@ ssh dockerbox@host -p 2222
   ホスト全体で `nested` を有効にしてからデーモンを再起動
   (`systemctl restart sandboxxing`)し、既存コンテナには `restart <name>` で
   反映させてください。
+
+## AWS Lambda MicroVM バックエンド
+
+コンテナをこのホストの systemd-nspawn ではなく、
+[AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html)
+(Firecracker の VM)として動かせます。バックエンドはコンテナごとに選びます:
+
+```bash
+ssh sandbox@host -p 2222 new --name=cloudbox --backend=microvm
+ssh cloudbox@host -p 2222        # ログイン、scp/sftp、ssh -L はそのまま使えます
+```
+
+### しくみ
+
+- **ホームディレクトリは EFS に置きます。** MicroVM は最長 8 時間で終了し、
+  ディスクも失われます。そのためコンテナごとに EFS の access point
+  (`/homes/<instance-id>`)を作り、MicroVM の起動時に `/root` へマウントします。
+- **8 時間に達すると新しい MicroVM へ移行します。** Lambda が MicroVM を
+  終了するとき、VM 内のエージェントが `/terminate` hook で受け取ります。
+  エージェントはデーモンに通知し、データを flush して unmount します。
+  デーモンは Lambda に状態を問い合わせて終了を確認したうえで、同じ
+  access point をマウントする新しい MicroVM を起動します。デーモンが
+  止まっていた場合は、次回起動時の照合か、次のログイン時に起動します。
+- **SSH 接続のない MicroVM は自動停止します(autostop)。** すべての SSH 接続を
+  中継するデーモンが、autostop 時間のあいだ接続がなかったコンテナの MicroVM を
+  停止します。autostop 時間は既定で 30 分です。`new --autostop` か
+  `edit --autostop` で変更でき、`0` にすると停止しません。接続があるとタイマーは
+  リセットされます。管理セッションから `ssh <name>` で実行したコマンドも接続として
+  数えます。停止後は、次のログインで新しい MicroVM を起動します。判定は 30 秒
+  ごとに行い、デーモンを再起動するとタイマーは最初から数え直します。
+- **VM 内のエージェント** (`cmd/sandboxxing-agent`) が MicroVM の HTTPS
+  エンドポイント越しに WebSocket でコマンド実行、端末、ポート接続を提供します。
+  エンドポイントは JWE トークン(デーモンだけが持ち、データポート 8080 のみ
+  有効)と、MicroVM ごとの secret の両方で認証します。
+
+### 制約
+
+- **移行時には数十秒の断が生じます。** 実行中のプロセス、ルートファイル
+  システムへの変更(後から入れたパッケージなど)、SSH 接続は引き継がれません。
+  引き継がれるのは `/root` だけです。8 時間到達前に AWS から届く通知は
+  ありません(届くのは終了時の hook だけです)。
+- サイズは MicroVM イメージで決まります。`--cpu/--memory/--disk/--share/
+  --nested`、`cp`、`resize` は使えません。
+- ARM64 のみです。利用できるリージョンも限られます。
+- `rm` はホームディレクトリの中身、access point、実行ロールを削除します。
+  中身を消すために一時的に MicroVM を起動します。
+
+### 分離
+
+サンドボックスの利用者は VM 内で root なので、VM 内の認証情報もマウント操作も
+自由に使えます。そこで他のコンテナのホームディレクトリに触れないよう、次の
+対策をとっています。
+
+- **コンテナごとに IAM 実行ロールを作ります。** このロールが許されるのは、
+  自分の access point 経由のマウント(`elasticfilesystem:AccessPointArn`
+  条件付き)と自分のログストリームへの書き込みだけです。デーモンは
+  permissions boundary を付けたロールしか作れません。
+- **EFS のファイルシステムポリシーには Deny だけを書きます**(TLS なしの
+  アクセスと、access point を経由しないアクセスを拒否します)。ポリシーが
+  存在するので匿名マウントも拒否されます。
+- **access point のパスにはランダムな instance ID を使います。** 同じ名前で
+  作り直しても、前のコンテナのファイルは見えません。
+- VM 内から偽の終了通知を送っても、Lambda 側で終了を確認できない限り
+  移行は起きません。
+
+### セットアップ
+
+AWS 側のリソースは `deploy/cdk` の CDK スタック(TypeScript)にまとまって
+います。すべてのリソースに `RemovalPolicy.DESTROY` が付いているので、
+`make cdk-destroy` でホームディレクトリのデータも含めて削除されます。
+
+```bash
+make cdk-install
+aws lambda-microvms list-managed-microvm-image-versions \
+  --image-identifier arn:aws:lambda:<region>:aws:microvm-image:al2023-1
+make cdk-deploy BASE_IMAGE_VERSION=<version>
+```
+
+1. 出力 `DaemonPolicyArn` のポリシーを、デーモンが使う IAM ID にアタッチします。
+2. 出力 `DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。
+3. `sandboxxing -check` で認証情報を確認してから、デーモンを再起動します。
+
+デーモンは通常の AWS SDK の方法(環境変数、`~/.aws`、インスタンスロール)で
+認証情報を取得します。
+
+```json
+{
+  "default_backend": "nspawn",
+  "microvm": {
+    "region": "ap-northeast-1",
+    "images": { "al2023": { "arn": "arn:aws:lambda:ap-northeast-1:123456789012:microvm-image:sandboxxing" } },
+    "egress_network_connectors": ["arn:aws:lambda:ap-northeast-1:123456789012:network-connector:nc-..."],
+    "efs_file_system_id": "fs-...",
+    "permissions_boundary_arn": "arn:aws:iam::123456789012:policy/...",
+    "log_group": "/sandboxxing/microvms",
+    "maximum_duration": "8h"
+  }
+}
+```
+
+### 実機での確認結果
+
+2026-10 に ap-northeast-1 で確認した結果です。
+
+- **確認済み**: MicroVM 内の efs-utils は、コンテナごとの実行ロールを使って
+  `tls,iam,accesspoint=` でマウントできます。別のサンドボックスの root から、
+  次のマウントはいずれも `access denied` で拒否されました。
+  - 他のコンテナの access point を指定したマウント
+  - access point を使わない FS ルートのマウント
+  - 匿名でのマウント
+  - TLS なしの NFS マウント
+- **確認済み**: 最大期間に達すると `/terminate` hook が届きます。その時点では
+  エージェントへの WebSocket もまだ使えるので、デーモンに通知が届きます。
+  通知は期限の約 20 秒後に届き、新しい MicroVM への移行は約 5 秒で終わりました。
+- **確認済み**: イメージは `INTERNET_EGRESS` でビルドし、実行時には VPC
+  connector を指定できます(インターネットへは NAT 経由)。
+- **確認済み**: network connector の operator role は `lambda.amazonaws.com`
+  を信頼すれば動きます。ただし connector の作成には 15 分ほどかかります。
+- **確認済み**: `cdk destroy` で、スタックの全リソースが削除されます。
+  デーモンが削除し残した access point と実行ロールも、あわせて削除されます。
+- **判明した仕様**: MicroVM のエンドポイントは、無通信の WebSocket を 60 秒で
+  切断します。デーモンは 20 秒ごとに ping を送ります。
+- **判明した仕様**: connector を指定して RunMicrovm を呼ぶには、ドキュメントに
+  載っていない `lambda:PassNetworkConnector` 権限が必要です。また、
+  CreateAccessPoint にタグを付けると、`elasticfilesystem:TagResource` は
+  ファイルシステムに対して評価されます。
+- **判明した仕様**: 作成直後の実行ロールは、RunMicrovm には受け付けられても、
+  VM の起動時に「role を assume できない」として失敗することがあります。
+  初回の起動は再試行します。
+- **未確認**: idle による suspend と WebSocket の関係(`idle_policy` は既定で
+  無効)、CloudTrail の data event に `runHookPayload` が記録されるかどうか。
 
 ## コンテナ内の DNS
 
