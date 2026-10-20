@@ -656,11 +656,46 @@ ssh cloudbox@host -p 2222        # logins, scp/sftp and ssh -L work as usual
   installed later, ...) and SSH connections do not survive it. Only `/root`
   does. AWS sends no notice before the eight hours are up; the hook arrives
   only at termination.
-- The size comes from the MicroVM image. `--cpu/--memory/--disk/--share/
-  --nested`, `cp` and `resize` are not available.
+- The size comes from the MicroVM image. `--cpu/--memory/--disk/--nested`,
+  `cp` and `resize` are not available.
 - MicroVMs are ARM64 only and available in a few regions.
 - `rm` deletes the files of the home directory, the access point and the
   execution role. It starts a MicroVM for a moment to delete the files.
+
+### Shared directories
+
+Directories of the EFS file system can be shared between MicroVMs, the way
+host directories are shared with systemd-nspawn containers. The path is a
+directory of the file system, not of the host.
+
+```json
+{
+  "microvm": {
+    "shares": [
+      "/shared/data",
+      { "path": "/shared/tools", "target": "/opt/tools", "read_only": true }
+    ]
+  }
+}
+```
+
+```bash
+ssh sandbox@host -p 2222 new --backend=microvm --share=/shared/data:/data:ro
+```
+
+- The daemon creates one access point per directory, which every container
+  that shares it uses, and grants the execution role of each container the
+  mount of its shares. A read-only share is granted without `ClientWrite`, so
+  EFS refuses writes whatever happens inside the VM.
+- The agent mounts the shares after the home directory. A share added to the
+  configuration reaches a container with its next MicroVM.
+- Files keep their owners, as on a bind mount; the directory is created as
+  root with mode 0755.
+- The directory of the home directories (`efs_home_root`), anything below it
+  and anything above it cannot be shared, and a share cannot be mounted over
+  the home directory.
+- `rm` keeps the shared directories. `make cdk-destroy` deletes them with the
+  file system.
 
 ### Isolation
 

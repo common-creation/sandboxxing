@@ -103,7 +103,7 @@ func TestMicroVMRejectsHostOptions(t *testing.T) {
 	for _, opts := range []Options{
 		{Name: "a", CPU: 2},
 		{Name: "b", Disk: 1 << 30},
-		{Name: "c", Shares: []config.Share{{Path: "/srv"}}},
+		{Name: "c", Shares: []config.Share{{Path: "/homes"}}},
 		{Name: "d", Nested: true},
 		{Name: "e", Image: "missing"},
 	} {

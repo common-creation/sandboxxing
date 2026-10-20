@@ -52,7 +52,16 @@ func TestMicroVMValidation(t *testing.T) {
 			c.MicroVM = nil
 			c.DefaultBackend = "microvm"
 		}, "microvm section"},
-		"unknown backend": {func(c *Config) { c.DefaultBackend = "qemu" }, "default_backend"},
+		"unknown backend":    {func(c *Config) { c.DefaultBackend = "qemu" }, "default_backend"},
+		"share of the homes": {func(c *Config) { c.MicroVM.Shares = []Share{{Path: "/homes"}} }, "home directories"},
+		"share in the homes": {func(c *Config) { c.MicroVM.Shares = []Share{{Path: "/homes/abc"}} }, "home directories"},
+		"share above the homes": {func(c *Config) {
+			c.MicroVM.HomeRoot = "/data/homes"
+			c.MicroVM.Shares = []Share{{Path: "/data"}}
+		}, "home directories"},
+		"shares at one target": {func(c *Config) {
+			c.MicroVM.Shares = []Share{{Path: "/a", Target: "/mnt"}, {Path: "/b", Target: "/mnt"}}
+		}, "both mounted"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := Default()

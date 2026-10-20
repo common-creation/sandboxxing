@@ -97,6 +97,14 @@ type MicroVM struct {
 	watching map[string]string
 	// runningUntil caches a RUNNING answer by MicroVM.
 	runningUntil map[string]time.Time
+	// policies holds the policy last written to each execution role.
+	policies map[string]string
+
+	// shareMu serialises the lookup of the access points of the shared
+	// directories, so that two containers never create one twice.
+	shareMu sync.Mutex
+	// shareAPs caches the access points of the shared directories by path.
+	shareAPs map[string]shareAP
 }
 
 type authToken struct {
@@ -152,6 +160,7 @@ func NewMicroVMWith(ctx context.Context, cfg *config.MicroVMConfig, log *slog.Lo
 		stopping:      map[string]string{},
 		watching:      map[string]string{},
 		runningUntil:  map[string]time.Time{},
+		policies:      map[string]string{},
 	}
 }
 
@@ -241,19 +250,12 @@ func (b *MicroVM) Provision(ctx context.Context, vm *state.VM) error {
 		}); err != nil {
 			return err
 		}
-		policy, err := b.rolePolicy(mv)
-		if err != nil {
-			return err
-		}
-		if _, err := b.iam.PutRolePolicy(ctx, &iam.PutRolePolicyInput{
-			RoleName:       aws.String(name),
-			PolicyName:     aws.String(rolePolicyName),
-			PolicyDocument: aws.String(policy),
-		}); err != nil {
-			return fmt.Errorf("grant the execution role of %s: %w", vm.Name, err)
-		}
+		mv, _ = b.state.MicroVMOf(vm.Name)
 	}
-	return nil
+	// The shares are granted with the home directory, so that the policy
+	// has propagated by the time the first MicroVM mounts them.
+	_, err := b.grant(ctx, vm, mv)
+	return err
 }
 
 // waitAccessPoint waits until a new access point can be mounted.
@@ -288,14 +290,16 @@ const trustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow",` +
 const rolePolicyName = "sandboxxing-home"
 
 // rolePolicy is the only permission of an execution role: mounting the file
-// system through the access point of its container, and writing the log
-// stream of its container. The condition is what keeps one container out of
-// the home directories of the others.
-func (b *MicroVM) rolePolicy(mv state.MicroVM) (string, error) {
+// system through the access point of its container and through those of its
+// shared directories, and writing the log stream of its container. The
+// condition is what keeps one container out of the home directories of the
+// others.
+func (b *MicroVM) rolePolicy(mv state.MicroVM, shares []shareGrant) (string, error) {
 	partition, account, err := arnAccount(mv.AccessPointARN)
 	if err != nil {
 		return "", err
 	}
+	fileSystem := fmt.Sprintf("arn:%s:elasticfilesystem:%s:%s:file-system/%s", partition, b.region, account, b.cfg.FileSystemID)
 	statements := []map[string]any{{
 		"Effect": "Allow",
 		"Action": []string{
@@ -303,11 +307,12 @@ func (b *MicroVM) rolePolicy(mv state.MicroVM) (string, error) {
 			"elasticfilesystem:ClientWrite",
 			"elasticfilesystem:ClientRootAccess",
 		},
-		"Resource": fmt.Sprintf("arn:%s:elasticfilesystem:%s:%s:file-system/%s", partition, b.region, account, b.cfg.FileSystemID),
+		"Resource": fileSystem,
 		"Condition": map[string]any{
 			"StringEquals": map[string]string{"elasticfilesystem:AccessPointArn": mv.AccessPointARN},
 		},
 	}}
+	statements = append(statements, shareStatements(fileSystem, shares)...)
 	if b.cfg.LogGroup != "" {
 		group := fmt.Sprintf("arn:%s:logs:%s:%s:log-group:%s", partition, b.region, account, b.cfg.LogGroup)
 		statements = append(statements,
@@ -371,6 +376,9 @@ func (b *MicroVM) Remove(ctx context.Context, vm *state.VM) error {
 		if err != nil && !errors.As(err, &noSuch) {
 			return fmt.Errorf("delete the execution role of %s: %w", vm.Name, err)
 		}
+		b.mu.Lock()
+		delete(b.policies, mv.RoleName)
+		b.mu.Unlock()
 	}
 	return nil
 }
@@ -466,6 +474,12 @@ func (b *MicroVM) runNew(ctx context.Context, vm *state.VM, mv state.MicroVM) er
 	if mv.AccessPointID == "" || mv.RoleARN == "" {
 		return fmt.Errorf("the AWS resources of %s are incomplete: remove the container and create it again", vm.Name)
 	}
+	// A share added to the configuration since the last start is granted
+	// now.
+	shares, err := b.grant(ctx, vm, mv)
+	if err != nil {
+		return err
+	}
 	secret := randomHex(32)
 	generation := mv.Generation + 1
 	payload, err := json.Marshal(agent.RunConfig{
@@ -475,6 +489,7 @@ func (b *MicroVM) runNew(ctx context.Context, vm *state.VM, mv state.MicroVM) er
 		FileSystemID:    b.cfg.FileSystemID,
 		AccessPointID:   mv.AccessPointID,
 		Home:            b.home,
+		Shares:          shares,
 		MaximumDuration: b.cfg.MaximumDuration.Duration(),
 	})
 	if err != nil {

@@ -120,9 +120,19 @@ type RunConfig struct {
 	AccessPointID string `json:"ap,omitempty"`
 	// Home is where the home directory is mounted.
 	Home string `json:"home,omitempty"`
+	// Shares are access points of the same file system that are mounted
+	// after the home directory.
+	Shares []ShareMount `json:"shares,omitempty"`
 	// MaximumDuration is the maximum duration the VM was started with, which
 	// tells an expiry apart from an early termination.
 	MaximumDuration time.Duration `json:"max_duration,omitempty"`
+}
+
+// ShareMount is a shared directory of the file system.
+type ShareMount struct {
+	AccessPointID string `json:"ap"`
+	Target        string `json:"target"`
+	ReadOnly      bool   `json:"ro,omitempty"`
 }
 
 // RunRequest is the body that Lambda posts to the run hook.

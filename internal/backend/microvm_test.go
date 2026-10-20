@@ -309,3 +309,130 @@ func TestRunHookPayloadLimit(t *testing.T) {
 		t.Error("a MicroVM was started with an oversized payload")
 	}
 }
+
+// TestMicroVMShares mounts the shared directories through one access point per
+// directory, which the execution roles may mount, read-only ones without the
+// permission to write.
+func TestMicroVMShares(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := microvmtest.New()
+	t.Cleanup(fake.Close)
+	cfg := testMicroVMConfig()
+	cfg.Shares = []config.Share{{Path: "/shared/data"}}
+	home := t.TempDir()
+	b := backend.NewMicroVMWith(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), st,
+		backend.MicroVMClients{Region: "us-east-1", VMs: fake, EFS: fake, IAM: fake, Poll: 20 * time.Millisecond, Home: home, UnmountedHome: true})
+
+	start := func(name string, shares []config.Share) *state.VM {
+		t.Helper()
+		vm := &state.VM{Name: name, Backend: state.BackendMicroVM, Shares: shares,
+			MicroVM: &state.MicroVM{InstanceID: backend.NewInstanceID(), ImageARN: "arn:aws:lambda:us-east-1:123456789012:microvm-image:sbx"}}
+		if err := st.Add(vm); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Provision(ctx, vm); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Start(ctx, vm); err != nil {
+			t.Fatal(err)
+		}
+		return vm
+	}
+	start("one", nil)
+	two := start("two", []config.Share{{Path: "/tools", Target: "/opt/tools", ReadOnly: true}})
+
+	shareAPs := map[string]string{}
+	for id, ap := range fake.AccessPoints {
+		for _, tag := range ap.Tags {
+			if aws.ToString(tag.Key) == "sandboxxing:share" {
+				if previous, ok := shareAPs[aws.ToString(tag.Value)]; ok {
+					t.Errorf("%s has two access points, %s and %s", aws.ToString(tag.Value), previous, id)
+				}
+				shareAPs[aws.ToString(tag.Value)] = id
+			}
+		}
+	}
+	if len(shareAPs) != 2 || shareAPs["/shared/data"] == "" || shareAPs["/tools"] == "" {
+		t.Fatalf("access points of the shares = %v", shareAPs)
+	}
+	if path := aws.ToString(fake.AccessPoints[shareAPs["/tools"]].RootDirectory.Path); path != "/tools" {
+		t.Errorf("the access point of /tools is rooted at %s", path)
+	}
+
+	mv, _ := st.MicroVMOf("two")
+	mounts := fake.Get(mv.ID).Config.Shares
+	if len(mounts) != 2 ||
+		mounts[0].AccessPointID != shareAPs["/shared/data"] || mounts[0].Target != "/shared/data" || mounts[0].ReadOnly ||
+		mounts[1].AccessPointID != shareAPs["/tools"] || mounts[1].Target != "/opt/tools" || !mounts[1].ReadOnly {
+		t.Fatalf("shares of two = %+v", mounts)
+	}
+
+	var policy struct {
+		Statement []struct {
+			Action    []string
+			Condition map[string]map[string]any
+		}
+	}
+	if err := json.Unmarshal([]byte(fake.Policies[mv.RoleName]), &policy); err != nil {
+		t.Fatal(err)
+	}
+	writable := map[string]bool{}
+	mountable := map[string]bool{}
+	for _, s := range policy.Statement {
+		arns := s.Condition["StringEquals"]["elasticfilesystem:AccessPointArn"]
+		var list []string
+		switch v := arns.(type) {
+		case string:
+			list = []string{v}
+		case []any:
+			for _, a := range v {
+				list = append(list, a.(string))
+			}
+		}
+		for _, arn := range list {
+			for _, action := range s.Action {
+				switch action {
+				case "elasticfilesystem:ClientMount":
+					mountable[arn] = true
+				case "elasticfilesystem:ClientWrite":
+					writable[arn] = true
+				}
+			}
+		}
+	}
+	tools := "arn:aws:elasticfilesystem:us-east-1:" + microvmtest.Account + ":access-point/" + shareAPs["/tools"]
+	data := "arn:aws:elasticfilesystem:us-east-1:" + microvmtest.Account + ":access-point/" + shareAPs["/shared/data"]
+	if !mountable[tools] || writable[tools] {
+		t.Errorf("the read-only share: mount %v, write %v", mountable[tools], writable[tools])
+	}
+	if !mountable[data] || !writable[data] {
+		t.Errorf("the writable share: mount %v, write %v", mountable[data], writable[data])
+	}
+
+	// Removing a container keeps the shared directories.
+	if err := b.Remove(ctx, two); err != nil {
+		t.Fatal(err)
+	}
+	for dir, id := range shareAPs {
+		if _, ok := fake.AccessPoints[id]; !ok {
+			t.Errorf("removing a container deleted the access point of %s", dir)
+		}
+	}
+
+	for _, shares := range [][]config.Share{
+		{{Path: "/homes"}},
+		{{Path: "/homes/x"}},
+		{{Path: "/srv", Target: home}},
+		{{Path: "/srv", Target: home + "/srv"}},
+		{{Path: "/a"}, {Path: "/b", Target: "/shared/a"}},
+	} {
+		if err := b.CheckShares(shares); err == nil {
+			t.Errorf("CheckShares(%v) accepted", shares)
+		}
+	}
+}

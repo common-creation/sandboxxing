@@ -43,7 +43,8 @@ type Server struct {
 	groups map[int]struct{}
 }
 
-// HomeMounter mounts and unmounts the home directory of the instance.
+// HomeMounter mounts and unmounts the home directory of the instance,
+// together with its shared directories.
 type HomeMounter interface {
 	Mount(ctx context.Context, cfg *RunConfig) error
 	// Check reports whether the mounted home directory still answers.
@@ -559,7 +560,36 @@ func (EFSMounter) Mount(ctx context.Context, cfg *RunConfig) error {
 			return fmt.Errorf("populate the home directory: %w", err)
 		}
 	}
+	for _, share := range cfg.Shares {
+		if err := mountShare(ctx, cfg.FileSystemID, share); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// mountShare mounts a shared directory. The execution role is granted a new
+// share right before the VM starts, and IAM takes a moment to apply that, so
+// a refused mount is tried again until the hook runs out of time.
+func mountShare(ctx context.Context, fs string, share ShareMount) error {
+	if err := os.MkdirAll(share.Target, 0o755); err != nil {
+		return err
+	}
+	opts := "tls,iam,accesspoint=" + share.AccessPointID
+	if share.ReadOnly {
+		opts += ",ro"
+	}
+	for {
+		out, err := process.Output(ctx, "mount", "-t", "efs", "-o", opts, fs+":/", share.Target)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("mount %s at %s: %w: %s", share.AccessPointID, share.Target, err, out)
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // watchdog is the helper of the EFS mount helper that restarts the TLS proxy
@@ -594,8 +624,14 @@ func (EFSMounter) Check(ctx context.Context, cfg *RunConfig) error {
 	defer cancel()
 	// stat(1) on the mount point needs an answer from the server, unlike a
 	// look at the mount table.
-	if out, err := process.Output(ctx, "stat", "-f", homeOf(cfg)); err != nil {
-		return fmt.Errorf("%w: %s", err, out)
+	dirs := []string{homeOf(cfg)}
+	for _, share := range cfg.Shares {
+		dirs = append(dirs, share.Target)
+	}
+	for _, dir := range dirs {
+		if out, err := process.Output(ctx, "stat", "-f", dir); err != nil {
+			return fmt.Errorf("%s: %w: %s", dir, err, out)
+		}
 	}
 	return nil
 }
@@ -603,12 +639,25 @@ func (EFSMounter) Check(ctx context.Context, cfg *RunConfig) error {
 func (EFSMounter) Unmount(ctx context.Context, cfg *RunConfig) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if _, err := process.Output(ctx, "umount", homeOf(cfg)); err == nil {
+	var errs []error
+	for i := len(cfg.Shares) - 1; i >= 0; i-- {
+		if err := unmount(ctx, cfg.Shares[i].Target); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := unmount(ctx, homeOf(cfg)); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// unmount unmounts a directory, detaching a busy or unresponsive mount.
+func unmount(ctx context.Context, dir string) error {
+	if _, err := process.Output(ctx, "umount", dir); err == nil {
 		return nil
 	}
-	// A busy or unresponsive mount is detached instead.
-	if out, err := process.Output(context.Background(), "umount", "-l", homeOf(cfg)); err != nil {
-		return fmt.Errorf("%w: %s", err, out)
+	if out, err := process.Output(context.Background(), "umount", "-l", dir); err != nil {
+		return fmt.Errorf("unmount %s: %w: %s", dir, err, out)
 	}
 	return nil
 }

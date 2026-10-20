@@ -284,7 +284,7 @@ func (f *Fake) CreateAccessPoint(ctx context.Context, in *efs.CreateAccessPointI
 	f.AccessPoints[id] = in
 	return &efs.CreateAccessPointOutput{
 		AccessPointId:  aws.String(id),
-		AccessPointArn: aws.String("arn:aws:elasticfilesystem:us-east-1:" + Account + ":access-point/" + id),
+		AccessPointArn: aws.String(accessPointARN(id)),
 		LifeCycleState: efstypes.LifeCycleStateCreating,
 	}, nil
 }
@@ -293,12 +293,35 @@ func (f *Fake) DescribeAccessPoints(ctx context.Context, in *efs.DescribeAccessP
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id := aws.ToString(in.AccessPointId)
-	if _, ok := f.AccessPoints[id]; !ok {
+	if id == "" {
+		out := &efs.DescribeAccessPointsOutput{}
+		for id, ap := range f.AccessPoints {
+			if aws.ToString(ap.FileSystemId) == aws.ToString(in.FileSystemId) {
+				out.AccessPoints = append(out.AccessPoints, describe(id, ap))
+			}
+		}
+		return out, nil
+	}
+	ap, ok := f.AccessPoints[id]
+	if !ok {
 		return nil, &efstypes.AccessPointNotFound{Message: aws.String(id)}
 	}
-	return &efs.DescribeAccessPointsOutput{AccessPoints: []efstypes.AccessPointDescription{{
-		AccessPointId: aws.String(id), LifeCycleState: efstypes.LifeCycleStateAvailable,
-	}}}, nil
+	return &efs.DescribeAccessPointsOutput{AccessPoints: []efstypes.AccessPointDescription{describe(id, ap)}}, nil
+}
+
+func accessPointARN(id string) string {
+	return "arn:aws:elasticfilesystem:us-east-1:" + Account + ":access-point/" + id
+}
+
+func describe(id string, in *efs.CreateAccessPointInput) efstypes.AccessPointDescription {
+	return efstypes.AccessPointDescription{
+		AccessPointId:  aws.String(id),
+		AccessPointArn: aws.String(accessPointARN(id)),
+		FileSystemId:   in.FileSystemId,
+		RootDirectory:  in.RootDirectory,
+		Tags:           in.Tags,
+		LifeCycleState: efstypes.LifeCycleStateAvailable,
+	}
 }
 
 func (f *Fake) DeleteAccessPoint(ctx context.Context, in *efs.DeleteAccessPointInput, opts ...func(*efs.Options)) (*efs.DeleteAccessPointOutput, error) {

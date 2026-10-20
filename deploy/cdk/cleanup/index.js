@@ -1,6 +1,7 @@
 // Removes what the sandboxxing daemon created outside of the stack before the
 // stack is deleted: the MicroVMs of the image, the access points of the home
-// directories and the execution roles of the containers.
+// directories and of the shared directories, and the execution roles of the
+// containers.
 const efs = require('@aws-sdk/client-efs');
 const iam = require('@aws-sdk/client-iam');
 
@@ -42,7 +43,7 @@ async function deleteAccessPoints(fileSystemId) {
   do {
     const out = await client.send(new efs.DescribeAccessPointsCommand({ FileSystemId: fileSystemId, NextToken }));
     for (const ap of out.AccessPoints ?? []) {
-      if (!(ap.Tags ?? []).some((t) => t.Key === 'sandboxxing:instance')) continue;
+      if (!(ap.Tags ?? []).some((t) => t.Key === 'sandboxxing:instance' || t.Key === 'sandboxxing:share')) continue;
       await client.send(new efs.DeleteAccessPointCommand({ AccessPointId: ap.AccessPointId }));
     }
     NextToken = out.NextToken;

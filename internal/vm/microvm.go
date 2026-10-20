@@ -27,7 +27,8 @@ type remover interface {
 
 // createMicroVM registers a container run by the microvm backend. The sizes of
 // a MicroVM come from its image and nothing is stored on the host, so only
-// the options that apply to it are accepted.
+// the options that apply to it are accepted. Its shares are directories of
+// the EFS file system instead of the host.
 func (m *Manager) createMicroVM(ctx context.Context, opts Options) (*state.VM, error) {
 	if m.microvm == nil {
 		return nil, errors.New("the microvm backend is not configured")
@@ -35,8 +36,6 @@ func (m *Manager) createMicroVM(ctx context.Context, opts Options) (*state.VM, e
 	switch {
 	case opts.CPU > 0 || opts.Memory > 0 || opts.Disk > 0:
 		return nil, errors.New("--cpu, --memory and --disk are not available for MicroVMs: the size is set by the MicroVM image")
-	case len(opts.Shares) > 0:
-		return nil, errors.New("--share is not available for MicroVMs: they cannot reach the host")
 	case opts.Nested:
 		return nil, errors.New("--nested is not available for MicroVMs")
 	}
@@ -46,6 +45,10 @@ func (m *Manager) createMicroVM(ctx context.Context, opts Options) (*state.VM, e
 			return nil, err
 		}
 		autoStop = config.Duration(*opts.AutoStop)
+	}
+	// A share of a MicroVM is a directory of the EFS file system.
+	if err := m.microvm.CheckShares(config.MergeShares(m.cfg.MicroVM.Shares, opts.Shares)); err != nil {
+		return nil, err
 	}
 	img, err := m.microvm.Image(opts.Image)
 	if err != nil {
@@ -64,6 +67,7 @@ func (m *Manager) createMicroVM(ctx context.Context, opts Options) (*state.VM, e
 		Comment:  opts.Comment,
 		Tags:     opts.Tags,
 		Env:      opts.Env,
+		Shares:   opts.Shares,
 		Backend:  state.BackendMicroVM,
 		AutoStop: &autoStop,
 		MicroVM: &state.MicroVM{

@@ -103,6 +103,32 @@ func (s *Share) Validate() error {
 	return nil
 }
 
+// MergeShares returns the shares of a container: the ones of the whole host
+// followed by the container specific ones, with a container entry replacing
+// one of the host that is mounted at the same target.
+func MergeShares(host, own []Share) []Share {
+	byTarget := map[string]Share{}
+	var order []string
+	add := func(share Share) {
+		target := share.MountTarget()
+		if _, ok := byTarget[target]; !ok {
+			order = append(order, target)
+		}
+		byTarget[target] = share
+	}
+	for _, share := range host {
+		add(share)
+	}
+	for _, share := range own {
+		add(share)
+	}
+	out := make([]Share, 0, len(order))
+	for _, target := range order {
+		out = append(out, byTarget[target])
+	}
+	return out
+}
+
 // ParseShare parses the command line form "path[:target][:ro]".
 func ParseShare(value string) (Share, error) {
 	parts := strings.Split(value, ":")

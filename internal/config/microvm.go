@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +46,10 @@ type MicroVMConfig struct {
 	StartTimeout Duration `json:"start_timeout"`
 	// IdlePolicy suspends idle MicroVMs. Nil keeps them running.
 	IdlePolicy *MicroVMIdlePolicy `json:"idle_policy"`
+	// Shares are directories of the file system that every MicroVM mounts,
+	// on top of the ones of each container. Path is the directory on the
+	// file system.
+	Shares []Share `json:"shares"`
 }
 
 // MicroVMImage is one MicroVM image.
@@ -128,6 +133,18 @@ func (c *MicroVMConfig) validate() error {
 	if c.StartTimeout <= 0 {
 		c.StartTimeout = Duration(3 * time.Minute)
 	}
+	seenTarget := map[string]string{}
+	for i := range c.Shares {
+		share := &c.Shares[i]
+		if err := c.CheckShare(*share); err != nil {
+			return fmt.Errorf("microvm.shares: %w", err)
+		}
+		target := share.MountTarget()
+		if previous, ok := seenTarget[target]; ok {
+			return fmt.Errorf("microvm.shares %q and %q are both mounted at %s", previous, share.Path, target)
+		}
+		seenTarget[target] = share.Path
+	}
 	if p := c.IdlePolicy; p != nil {
 		if p.MaxIdle <= 0 || p.MaxIdle.Duration() > MaxMicroVMDuration {
 			return fmt.Errorf("microvm.idle_policy.max_idle must be between 1s and %s", MaxMicroVMDuration)
@@ -135,6 +152,21 @@ func (c *MicroVMConfig) validate() error {
 		if p.SuspendedDuration < 0 {
 			return errors.New("microvm.idle_policy.suspended_duration must not be negative")
 		}
+	}
+	return nil
+}
+
+// CheckShare validates a share of the file system for a MicroVM. The
+// directories of the home directories are not shareable: a share of one of
+// them, or of a directory above them, would hand out the home directories of
+// the containers.
+func (c *MicroVMConfig) CheckShare(s Share) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	p := path.Clean(s.Path)
+	if p == c.HomeRoot || strings.HasPrefix(p, c.HomeRoot+"/") || strings.HasPrefix(c.HomeRoot, p+"/") {
+		return fmt.Errorf("share %q overlaps %s, which holds the home directories", s.Path, c.HomeRoot)
 	}
 	return nil
 }

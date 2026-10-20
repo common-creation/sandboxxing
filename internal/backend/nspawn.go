@@ -249,26 +249,7 @@ func (n *Nspawn) Limits(ctx context.Context, vm *state.VM) error {
 // configured for every container plus the ones recorded for this container.
 // A container specific entry with the same target wins.
 func (n *Nspawn) shares(vm *state.VM) []config.Share {
-	byTarget := map[string]config.Share{}
-	var order []string
-	add := func(share config.Share) {
-		target := share.MountTarget()
-		if _, ok := byTarget[target]; !ok {
-			order = append(order, target)
-		}
-		byTarget[target] = share
-	}
-	for _, share := range n.cfg.Shares {
-		add(share)
-	}
-	for _, share := range vm.Shares {
-		add(share)
-	}
-	out := make([]config.Share, 0, len(order))
-	for _, target := range order {
-		out = append(out, byTarget[target])
-	}
-	return out
+	return config.MergeShares(n.cfg.Shares, vm.Shares)
 }
 
 // Stop powers the container off.

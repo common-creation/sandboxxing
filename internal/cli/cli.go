@@ -163,7 +163,8 @@ Commands:
       [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
       [--nested] [--backend=nspawn|microvm] [--autostop=30m]
       [--setup-script=FILE] [--json]
-        create and boot a container (--share mounts a host directory,
+        create and boot a container (--share mounts a host directory, or
+        a directory of the EFS file system for a MicroVM,
         --nested allows Docker inside the container, --backend=microvm
         runs it as an AWS Lambda MicroVM, --autostop stops the MicroVM
         after that long without an SSH connection, 0 never)
@@ -501,30 +502,18 @@ func (r *Runner) cmdHostCheck(ctx context.Context, args []string, sess *IO) int 
 	return 0
 }
 
-// effectiveShares lists the host directories a container mounts: the ones
-// configured for the host followed by the container specific ones, with a
+// effectiveShares lists the directories a container mounts: the ones
+// configured for its backend followed by the container specific ones, with a
 // container entry replacing a global one that targets the same path.
 func (r *Runner) effectiveShares(vm *state.VM) []config.Share {
-	byTarget := map[string]config.Share{}
-	var order []string
-	add := func(share config.Share) {
-		target := share.MountTarget()
-		if _, ok := byTarget[target]; !ok {
-			order = append(order, target)
+	host := r.cfg.Shares
+	if vm.BackendName() == state.BackendMicroVM {
+		host = nil
+		if r.cfg.MicroVM != nil {
+			host = r.cfg.MicroVM.Shares
 		}
-		byTarget[target] = share
 	}
-	for _, share := range r.cfg.Shares {
-		add(share)
-	}
-	for _, share := range vm.Shares {
-		add(share)
-	}
-	out := make([]config.Share, 0, len(order))
-	for _, target := range order {
-		out = append(out, byTarget[target])
-	}
-	return out
+	return config.MergeShares(host, vm.Shares)
 }
 
 func (r *Runner) vmSSH(vm *state.VM) string {
