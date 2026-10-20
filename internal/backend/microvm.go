@@ -463,13 +463,15 @@ var errStartTerminated = errors.New("terminated while starting")
 // starts: Lambda accepts the request and the VM then terminates because the
 // role cannot be assumed. The first start is therefore tried again a few times.
 func (b *MicroVM) runNewRetrying(ctx context.Context, vm *state.VM, mv state.MicroVM) error {
+	const attempts = 6
 	first := mv.Generation == 0
 	for attempt := 1; ; attempt++ {
 		err := b.runNew(ctx, vm, mv)
-		if err == nil || !first || attempt == 6 || !errors.Is(err, errStartTerminated) {
+		if err == nil || !first || attempt == attempts || !errors.Is(err, errStartTerminated) {
 			return err
 		}
 		b.log.Info("the first MicroVM of a container did not start, retrying", "name", vm.Name, "err", err)
+		progress.From(ctx).Step("%v; retrying (attempt %d of %d)", err, attempt+1, attempts)
 		if err := sleep(ctx, 5*b.poll); err != nil {
 			return err
 		}
@@ -545,7 +547,7 @@ func (b *MicroVM) runNew(ctx context.Context, vm *state.VM, mv state.MicroVM) er
 	}
 
 	progress.From(ctx).Step("starting a MicroVM for %s", vm.Name)
-	out, err := b.run(ctx, in, generation == 1)
+	out, err := b.run(ctx, vm.Name, in, generation == 1)
 	if err != nil {
 		return fmt.Errorf("start a MicroVM for %s: %w", vm.Name, err)
 	}
@@ -571,9 +573,9 @@ func (b *MicroVM) runNew(ctx context.Context, vm *state.VM, mv state.MicroVM) er
 // run calls RunMicrovm. The execution role of a new container may not have
 // propagated through IAM yet, which Lambda reports as an invalid or denied
 // request, so the first start of a container retries those for a while.
-func (b *MicroVM) run(ctx context.Context, in *lambdamicrovms.RunMicrovmInput, newRole bool) (*lambdamicrovms.RunMicrovmOutput, error) {
+func (b *MicroVM) run(ctx context.Context, name string, in *lambdamicrovms.RunMicrovmInput, newRole bool) (*lambdamicrovms.RunMicrovmOutput, error) {
 	deadline := time.Now().Add(90 * time.Second)
-	for {
+	for attempt := 1; ; attempt++ {
 		out, err := b.vms.RunMicrovm(ctx, in)
 		if err == nil {
 			return out, nil
@@ -584,6 +586,11 @@ func (b *MicroVM) run(ctx context.Context, in *lambdamicrovms.RunMicrovmInput, n
 			return nil, err
 		}
 		b.log.Debug("the execution role is not usable yet, retrying", "err", err)
+		// The request is repeated every few seconds; telling it once is
+		// enough.
+		if attempt == 1 {
+			progress.From(ctx).Step("the execution role of %s is not usable yet, retrying for up to %s", name, time.Until(deadline).Round(time.Second))
+		}
 		if err := sleep(ctx, 2*b.poll); err != nil {
 			return nil, err
 		}

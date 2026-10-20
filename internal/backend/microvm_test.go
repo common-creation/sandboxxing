@@ -18,6 +18,7 @@ import (
 	"github.com/common-creation/sandboxxing/internal/backend"
 	"github.com/common-creation/sandboxxing/internal/backend/microvmtest"
 	"github.com/common-creation/sandboxxing/internal/config"
+	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
 )
 
@@ -458,5 +459,25 @@ func TestMicroVMRemoveNeverStarted(t *testing.T) {
 	}
 	if len(f.fake.AccessPoints) != 0 || len(f.fake.Roles) != 0 {
 		t.Errorf("left behind %d access points and %d roles", len(f.fake.AccessPoints), len(f.fake.Roles))
+	}
+}
+
+// TestStartRetryIsReported tells the client that the first MicroVM of a
+// container did not start and is tried again, with the reason.
+func TestStartRetryIsReported(t *testing.T) {
+	f := newFixture(t)
+	f.fake.FailStarts = 1
+	var out bytes.Buffer
+	ctx := progress.With(context.Background(), progress.New(io.Discard, &out))
+	if err := f.b.Start(ctx, f.vm); err != nil {
+		t.Fatal(err)
+	}
+	if f.fake.RunCount() != 2 {
+		t.Errorf("%d MicroVMs were started, want 2", f.fake.RunCount())
+	}
+	for _, want := range []string{"unable to assume the execution role", "retrying (attempt 2 of 6)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("progress does not mention %q:\n%s", want, out.String())
+		}
 	}
 }

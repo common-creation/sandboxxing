@@ -41,12 +41,17 @@ type Fake struct {
 	AccessPoints map[string]*efs.CreateAccessPointInput
 	Roles        map[string]*iam.CreateRoleInput
 	Policies     map[string]string
+
+	// FailStarts makes that many of the next MicroVMs terminate before
+	// they answer, as one whose execution role cannot be assumed yet does.
+	FailStarts int
 }
 
 // VM is a fake MicroVM.
 type VM struct {
-	ID    string
-	State mvtypes.MicrovmState
+	ID          string
+	State       mvtypes.MicrovmState
+	StateReason string
 	// Config is the run hook payload the VM received.
 	Config agent.RunConfig
 	Agent  *agent.Server
@@ -129,6 +134,13 @@ func (f *Fake) RunMicrovm(ctx context.Context, in *lambdamicrovms.RunMicrovmInpu
 	f.mu.Lock()
 	f.Runs = append(f.Runs, in)
 	id := f.next("mvm")
+	if f.FailStarts > 0 {
+		f.FailStarts--
+		f.VMs[id] = &VM{ID: id, State: mvtypes.MicrovmStateTerminated, StateReason: "unable to assume the execution role"}
+		f.mu.Unlock()
+		return &lambdamicrovms.RunMicrovmOutput{MicrovmId: aws.String(id), Endpoint: aws.String("http://127.0.0.1:1"),
+			State: mvtypes.MicrovmStatePending}, nil
+	}
 	f.mu.Unlock()
 
 	home := &Home{}
@@ -171,7 +183,11 @@ func (f *Fake) GetMicrovm(ctx context.Context, in *lambdamicrovms.GetMicrovmInpu
 	if !ok {
 		return nil, notFound(aws.ToString(in.MicrovmIdentifier))
 	}
-	return &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String(vm.ID), State: vm.State}, nil
+	out := &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String(vm.ID), State: vm.State}
+	if vm.StateReason != "" {
+		out.StateReason = aws.String(vm.StateReason)
+	}
+	return out, nil
 }
 
 func (f *Fake) ResumeMicrovm(ctx context.Context, in *lambdamicrovms.ResumeMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.ResumeMicrovmOutput, error) {
