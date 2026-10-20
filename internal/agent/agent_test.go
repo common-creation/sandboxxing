@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -277,5 +279,54 @@ func TestKeepaliveDuringIdleCommand(t *testing.T) {
 	}
 	if stdout.String() != "done\n" {
 		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+// TestStartupScript runs the startup script of the home directory in the
+// background once the run hook configured the VM.
+func TestStartupScript(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, filepath.Dir(StartupScript)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nsleep 1\necho \"$SBX_TEST $HOME\" > \"$HOME/ran\"\necho done\n"
+	if err := os.WriteFile(filepath.Join(home, StartupScript), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.Home = &fakeHome{}
+	srv.StartupLog = filepath.Join(t.TempDir(), "startup.log")
+	hooks := httptest.NewServer(srv.HookHandler())
+	t.Cleanup(hooks.Close)
+
+	began := time.Now()
+	if code := runHook(t, hooks.URL, RunConfig{Secret: testSecret, FileSystemID: "fs-1", AccessPointID: "fsap-1",
+		Home: home, Env: []string{"SBX_TEST=instance"}}); code != http.StatusOK {
+		t.Fatalf("run hook answered %d", code)
+	}
+	if took := time.Since(began); took > 800*time.Millisecond {
+		t.Errorf("the run hook waited %s for the startup script", took)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		b, _ := os.ReadFile(srv.StartupLog)
+		if strings.Contains(string(b), "exited with status 0") {
+			if !strings.Contains(string(b), "done") {
+				t.Errorf("the log lacks the output of the script:\n%s", b)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the startup script did not finish:\n%s", b)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "ran"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(b)); got != "instance "+home {
+		t.Errorf("the script saw %q, want the instance environment and HOME", got)
 	}
 }

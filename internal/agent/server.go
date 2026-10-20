@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -30,6 +31,8 @@ type Server struct {
 	log *slog.Logger
 	// Home holds the operations on the home directory. Tests replace it.
 	Home HomeMounter
+	// StartupLog receives the output of the startup script.
+	StartupLog string
 
 	mu sync.Mutex
 	// cfg is the instance configuration received by the run hook. The data
@@ -57,6 +60,7 @@ func NewServer(log *slog.Logger) *Server {
 	return &Server{
 		log:         log,
 		Home:        EFSMounter{},
+		StartupLog:  "/var/log/sandboxxing-startup.log",
 		subscribers: map[chan Control]struct{}{},
 		groups:      map[int]struct{}{},
 	}
@@ -126,7 +130,57 @@ func (s *Server) hookRun(w http.ResponseWriter, r *http.Request) {
 	s.started = time.Now()
 	s.mu.Unlock()
 	s.log.Info("instance configured", "name", cfg.Name, "microvm", req.MicrovmID)
+	go s.runStartup(&cfg)
 	w.WriteHeader(http.StatusOK)
+}
+
+// StartupScript is the script that every new VM runs, relative to the home
+// directory. It lives on the home directory, so it survives the moves to new
+// VMs and can set up again what the root file system lost, such as packages.
+const StartupScript = ".config/sandboxxing/startup"
+
+// runStartup runs the startup script of the home directory, if there is one.
+// It runs in the background: installing packages can take longer than Lambda
+// waits for the run hook, and logins do not wait for it. The output goes to
+// StartupLog, and the terminate hook stops it like any other command.
+func (s *Server) runStartup(cfg *RunConfig) {
+	home := homeOf(cfg)
+	script := filepath.Join(home, StartupScript)
+	info, err := os.Stat(script)
+	if err != nil || info.IsDir() {
+		return
+	}
+	argv := []string{script}
+	if info.Mode()&0o111 == 0 {
+		argv = []string{"/bin/sh", script}
+	}
+	out, err := os.OpenFile(s.StartupLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		s.log.Warn("open the log of the startup script", "err", err)
+		return
+	}
+	defer out.Close()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = process.MergeEnv(process.MergeEnv(os.Environ(), cfg.Env), []string{"HOME=" + home})
+	cmd.Dir = home
+	cmd.Stdout, cmd.Stderr = out, out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	fmt.Fprintf(out, "%s: running %s\n", time.Now().Format(time.RFC3339), script)
+	s.log.Info("running the startup script", "script", script)
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(out, "%s: %v\n", time.Now().Format(time.RFC3339), err)
+		s.log.Warn("run the startup script", "err", err)
+		return
+	}
+	pgid := cmd.Process.Pid
+	s.track(pgid, true)
+	code, err := waitCode(cmd)
+	s.track(pgid, false)
+	if err != nil {
+		fmt.Fprintf(out, "%s: %v\n", time.Now().Format(time.RFC3339), err)
+	}
+	fmt.Fprintf(out, "%s: %s exited with status %d\n", time.Now().Format(time.RFC3339), script, code)
+	s.log.Info("the startup script finished", "code", code)
 }
 
 // hookResume makes sure that the home directory survived the suspension. An

@@ -678,6 +678,31 @@ ssh cloudbox@host -p 2222        # logins, scp/sftp and ssh -L work as usual
 - `rm` deletes the files of the home directory, the access point and the
   execution role. It starts a MicroVM for a moment to delete the files.
 
+### Startup script
+
+Every new MicroVM of a container runs `~/.config/sandboxxing/startup` if it
+exists. The script lives in the home directory, so it survives the moves to
+new MicroVMs and can set up again what the root file system lost, such as
+packages:
+
+```bash
+mkdir -p ~/.config/sandboxxing
+cat > ~/.config/sandboxxing/startup <<'EOF'
+#!/bin/bash
+PM=$(command -v dnf || command -v microdnf)
+$PM install -y golang jq
+EOF
+chmod +x ~/.config/sandboxxing/startup
+```
+
+- It runs in the background as root, in the home directory, with the
+  environment of the container (`new --env`). Logins do not wait for it, so
+  right after a start the packages may not be there yet.
+- The output and the exit status go to `/var/log/sandboxxing-startup.log`.
+- A script without the executable bit runs with `/bin/sh`.
+- It runs once per MicroVM: at the first start, after a stop or autostop, and
+  after a move to a new MicroVM. A resumed MicroVM does not run it again.
+
 ### Shared directories
 
 Directories of the EFS file system can be shared between MicroVMs, the way

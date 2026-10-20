@@ -662,6 +662,30 @@ ssh cloudbox@host -p 2222        # ログイン、scp/sftp、ssh -L はそのま
 - `rm` はホームディレクトリの中身、access point、実行ロールを削除します。
   中身を消すために一時的に MicroVM を起動します。
 
+### 起動スクリプト
+
+コンテナの新しい MicroVM は、`~/.config/sandboxxing/startup` があれば起動時に
+実行します。スクリプトはホームディレクトリにあるので移行後も残り、ルート
+ファイルシステムとともに失われたもの(パッケージなど)を入れ直せます。
+
+```bash
+mkdir -p ~/.config/sandboxxing
+cat > ~/.config/sandboxxing/startup <<'EOF'
+#!/bin/bash
+PM=$(command -v dnf || command -v microdnf)
+$PM install -y golang jq
+EOF
+chmod +x ~/.config/sandboxxing/startup
+```
+
+- root として、ホームディレクトリで、コンテナの環境変数(`new --env`)付きで
+  裏で実行します。ログインはスクリプトの終了を待たないので、起動直後には
+  まだパッケージが入っていないことがあります。
+- 出力と終了ステータスは `/var/log/sandboxxing-startup.log` に残ります。
+- 実行権限のないスクリプトは `/bin/sh` で実行します。
+- MicroVM ごとに 1 回実行します。最初の起動時、stop や autostop の後、新しい
+  MicroVM への移行後に実行されます。サスペンドからの再開では実行しません。
+
 ### 共有ディレクトリ
 
 systemd-nspawn のコンテナでホストのディレクトリを共有するのと同じように、
