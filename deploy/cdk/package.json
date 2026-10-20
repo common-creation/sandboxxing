@@ -1,0 +1,25 @@
+{
+  "name": "sandboxxing-microvm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS resources of the sandboxxing microvm backend",
+  "bin": {
+    "app": "bin/app.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.273.0",
+    "constructs": "10.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "aws-cdk": "2.1145.0",
+    "ts-node": "10.9.2",
+    "typescript": "5.9.3"
+  }
+}

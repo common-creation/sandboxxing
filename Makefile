@@ -5,8 +5,11 @@ UNITDIR ?= /etc/systemd/system
 CONFDIR ?= /etc/sandboxxing
 # CONFIG is read by "make uninstall" to learn which bridge to remove.
 CONFIG ?= $(CONFDIR)/config.json
+# The agent runs inside the Lambda MicroVMs, which are ARM64 only.
+AGENT := deploy/microvm-image/sandboxxing-agent
+CDK := cd deploy/cdk && npx cdk
 
-.PHONY: help build test vet fmt install uninstall clean
+.PHONY: help build agent test vet fmt install uninstall clean cdk-install cdk-synth cdk-deploy cdk-destroy
 
 help:
 	@echo "targets:"
@@ -17,9 +20,32 @@ help:
 	@echo "  install    install the pre-built binary, the unit and the config"
 	@echo "  uninstall  remove the files, the bridge and the firewall rules"
 	@echo "  clean      remove bin/"
+	@echo "  agent      compile the MicroVM agent into deploy/microvm-image/"
+	@echo "  cdk-synth  synthesize the AWS stack of the microvm backend"
+	@echo "  cdk-deploy deploy it (BASE_IMAGE_VERSION=<version> is required)"
+	@echo "  cdk-destroy delete it, including the home directories"
 
 build:
 	$(GO) build -trimpath -o bin/sandboxxing ./cmd/sandboxxing
+
+agent:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -o $(AGENT) ./cmd/sandboxxing-agent
+
+cdk-install:
+	cd deploy/cdk && npm ci
+
+cdk-synth: agent
+	$(CDK) synth -c baseImageVersion=$(or $(BASE_IMAGE_VERSION),unset)
+
+cdk-deploy: agent
+	@if [ -z "$(BASE_IMAGE_VERSION)" ]; then \
+		echo "error: pass BASE_IMAGE_VERSION, see: aws lambda-microvms list-managed-microvm-image-versions --image-identifier arn:aws:lambda:<region>:aws:microvm-image:al2023-1" >&2; \
+		exit 1; \
+	fi
+	$(CDK) deploy -c baseImageVersion=$(BASE_IMAGE_VERSION)
+
+cdk-destroy:
+	$(CDK) destroy -c baseImageVersion=$(or $(BASE_IMAGE_VERSION),unset)
 
 test:
 	$(GO) test ./...
@@ -73,4 +99,4 @@ uninstall:
 	@echo "configuration in $(DESTDIR)$(CONFDIR) and data in /var/lib/sandboxxing were kept"
 
 clean:
-	rm -rf bin
+	rm -rf bin $(AGENT)
