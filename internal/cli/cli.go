@@ -88,6 +88,8 @@ func (r *Runner) Run(ctx context.Context, argv []string, sess *IO) int {
 		return r.cmdCopy(ctx, rest, sess)
 	case "resize":
 		return r.cmdResize(ctx, rest, sess)
+	case "edit":
+		return r.cmdEdit(ctx, rest, sess)
 	case "stat":
 		return r.cmdStat(ctx, rest, sess)
 	case "ssh":
@@ -159,9 +161,12 @@ Commands:
         list containers
   new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
       [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-      [--nested] [--setup-script=FILE] [--json]
+      [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+      [--setup-script=FILE] [--json]
         create and boot a container (--share mounts a host directory,
-        --nested allows Docker inside the container)
+        --nested allows Docker inside the container, --backend=microvm
+        runs it as an AWS Lambda MicroVM, --autostop stops the MicroVM
+        after that long without an SSH connection, 0 never)
   rm <name>... [--json]
         remove containers
   restart <name> [--json]
@@ -170,6 +175,8 @@ Commands:
         copy a container
   resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--json]
         change the resource limits (disk can only grow)
+  edit <name> --autostop=DURATION [--json]
+        change the autostop time of a MicroVM (0 never stops it)
   stat <name> [--range=24h|7d|30d] [--json]
         show container details and live resource usage
   ssh [-l user] [user@]name [command...]
@@ -277,9 +284,27 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 	fmt.Fprintf(sess.Out, "image:     %s\n", info.VM.Image)
 	fmt.Fprintf(sess.Out, "address:   %s\n", info.IP)
 	fmt.Fprintf(sess.Out, "ssh:       %s\n", r.vmSSH(info.VM))
-	fmt.Fprintf(sess.Out, "cpu:       %d\n", info.VM.CPU)
-	fmt.Fprintf(sess.Out, "memory:    %s\n", config.DiskSize(info.VM.Memory).String())
-	fmt.Fprintf(sess.Out, "disk:      %s\n", config.DiskSize(info.VM.Disk).String())
+	fmt.Fprintf(sess.Out, "backend:   %s\n", info.VM.BackendName())
+	if mv, ok := r.st.MicroVMOf(info.VM.Name); ok {
+		// The size of a MicroVM is set by its image.
+		fmt.Fprintf(sess.Out, "microvm:   %s\n", orNone(mv.ID))
+		fmt.Fprintf(sess.Out, "migrated:  %d time(s)\n", max(mv.Generation-1, 0))
+		if after, ok := r.st.AutoStopOf(info.VM.Name); ok {
+			if after > 0 {
+				fmt.Fprintf(sess.Out, "autostop:  after %s without SSH connections\n", autoStopText(after))
+			} else {
+				fmt.Fprintf(sess.Out, "autostop:  never\n")
+			}
+		}
+		if mv.ID != "" && r.cfg.MicroVM != nil {
+			left := time.Until(mv.StartedAt.Add(r.cfg.MicroVM.MaximumDuration.Duration()))
+			fmt.Fprintf(sess.Out, "replaced:  in %s\n", humanDuration(max(left, 0)))
+		}
+	} else {
+		fmt.Fprintf(sess.Out, "cpu:       %d\n", info.VM.CPU)
+		fmt.Fprintf(sess.Out, "memory:    %s\n", config.DiskSize(info.VM.Memory).String())
+		fmt.Fprintf(sess.Out, "disk:      %s\n", config.DiskSize(info.VM.Disk).String())
+	}
 	fmt.Fprintf(sess.Out, "created:   %s\n", info.VM.Created.Local().Format(time.RFC3339))
 	fmt.Fprintf(sess.Out, "comment:   %s\n", info.VM.Comment)
 	if len(info.VM.Tags) > 0 {
@@ -507,12 +532,50 @@ func (r *Runner) vmSSH(vm *state.VM) string {
 }
 
 func (r *Runner) writeJSON(sess *IO, v any) int {
+	v = withoutSecrets(v)
 	enc := json.NewEncoder(sess.Out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		return r.fail(sess, err)
 	}
 	return 0
+}
+
+// withoutSecrets returns container records without the secret that
+// authenticates the daemon at a MicroVM. The record is shared with the state,
+// so it is copied rather than changed.
+func withoutSecrets(v any) any {
+	scrub := func(vm *state.VM) *state.VM {
+		if vm == nil || vm.MicroVM == nil {
+			return vm
+		}
+		c, mv := *vm, *vm.MicroVM
+		mv.Secret = ""
+		c.MicroVM = &mv
+		return &c
+	}
+	switch t := v.(type) {
+	case *state.VM:
+		return scrub(t)
+	case vm.Info:
+		t.VM = scrub(t.VM)
+		return t
+	case []vm.Info:
+		out := make([]vm.Info, len(t))
+		for i, info := range t {
+			info.VM = scrub(info.VM)
+			out[i] = info
+		}
+		return out
+	}
+	return v
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 func (r *Runner) fail(sess *IO, err error) int {

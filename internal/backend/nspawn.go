@@ -1,15 +1,16 @@
-// Package backend runs sandbox containers with systemd-nspawn(1).
+// Package backend runs the sandbox containers. Nspawn runs them on this host
+// with systemd-nspawn(1).
 package backend
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,9 +32,16 @@ type Nspawn struct {
 	log *slog.Logger
 }
 
+var _ Backend = (*Nspawn)(nil)
+
 // New creates a backend for the configuration.
 func New(cfg *config.Config, log *slog.Logger) *Nspawn {
 	return &Nspawn{cfg: cfg, log: log}
+}
+
+// DiskPath returns the location of the disk image of a container.
+func (n *Nspawn) DiskPath(name string) string {
+	return filepath.Join(n.cfg.DataDir, "vms", name+".img")
 }
 
 // Unit returns the systemd unit name of a container.
@@ -77,7 +85,11 @@ func fuseAvailable() bool {
 }
 
 // Running reports whether the container is currently running.
-func (n *Nspawn) Running(ctx context.Context, name string) bool {
+func (n *Nspawn) Running(ctx context.Context, vm *state.VM) bool {
+	return n.running(ctx, vm.Name)
+}
+
+func (n *Nspawn) running(ctx context.Context, name string) bool {
 	out, err := n.systemctl(ctx, "is-active", Unit(name))
 	return err == nil && strings.TrimSpace(out) == "active"
 }
@@ -98,14 +110,14 @@ func (n *Nspawn) Leader(ctx context.Context, name string) (int, error) {
 // Start boots the container as a transient service. The systemd unit applies
 // the configured CPU and memory limits, so the container cannot use more than
 // its share even if a process inside misbehaves.
-func (n *Nspawn) Start(ctx context.Context, vm *state.VM, imagePath string) error {
-	if n.Running(ctx, vm.Name) {
+func (n *Nspawn) Start(ctx context.Context, vm *state.VM) error {
+	if n.running(ctx, vm.Name) {
 		return nil
 	}
 	// A unit left behind by an earlier failure must not block the restart.
 	_, _ = n.systemctl(ctx, "reset-failed", Unit(vm.Name))
 
-	args := n.startArgs(vm, imagePath)
+	args := n.startArgs(vm, n.DiskPath(vm.Name))
 	progress.From(ctx).Step("starting container %s", vm.Name)
 	cmd := process.Command(ctx, "systemd-run", args...)
 	out, err := cmd.CombinedOutput()
@@ -195,7 +207,7 @@ func (n *Nspawn) startArgs(vm *state.VM, imagePath string) []string {
 func (n *Nspawn) waitBoot(ctx context.Context, name string) error {
 	deadline := time.Now().Add(n.cfg.BootTimeout.Duration())
 	for time.Now().Before(deadline) {
-		if !n.Running(ctx, name) {
+		if !n.running(ctx, name) {
 			out, _ := n.systemctl(ctx, "status", Unit(name), "--no-pager", "-n", "30")
 			return fmt.Errorf("container %s exited during boot:\n%s", name, out)
 		}
@@ -260,8 +272,9 @@ func (n *Nspawn) shares(vm *state.VM) []config.Share {
 }
 
 // Stop powers the container off.
-func (n *Nspawn) Stop(ctx context.Context, name string) error {
-	if !n.Running(ctx, name) {
+func (n *Nspawn) Stop(ctx context.Context, vm *state.VM) error {
+	name := vm.Name
+	if !n.running(ctx, name) {
 		_, _ = n.systemctl(ctx, "reset-failed", Unit(name))
 		return nil
 	}
@@ -272,7 +285,7 @@ func (n *Nspawn) Stop(ctx context.Context, name string) error {
 	// recreated immediately afterwards.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if !n.Running(ctx, name) {
+		if !n.running(ctx, name) {
 			return nil
 		}
 		select {
@@ -285,31 +298,11 @@ func (n *Nspawn) Stop(ctx context.Context, name string) error {
 }
 
 // Restart stops and starts the container.
-func (n *Nspawn) Restart(ctx context.Context, vm *state.VM, imagePath string) error {
-	if err := n.Stop(ctx, vm.Name); err != nil {
+func (n *Nspawn) Restart(ctx context.Context, vm *state.VM) error {
+	if err := n.Stop(ctx, vm); err != nil {
 		return err
 	}
-	return n.Start(ctx, vm, imagePath)
-}
-
-// Exec describes one command invocation inside a container. The standard
-// streams are connected to the started nsenter(1) process.
-type Exec struct {
-	Argv   []string
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
-	// Env is passed to the command. The environment of the daemon is used as
-	// the base, so the variables that make a login work (HOME, PATH) are kept
-	// and only the listed entries are replaced.
-	Env []string
-	// Dir is the working directory inside the container. It defaults to /.
-	Dir string
-	// PTY makes the command the session leader with the given terminal as its
-	// controlling terminal, which is what enables job control. It must only
-	// be set when Stdin, Stdout and Stderr are the same terminal, usually the
-	// slave of a terminal from Nspawn.Terminal.
-	PTY bool
+	return n.Start(ctx, vm)
 }
 
 // nsenterArgs is the fixed part of the nsenter(1) command line. The working
@@ -332,8 +325,8 @@ func nsenterArgs(pid int, dir string) []string {
 // keeps output streaming intact and makes the exit status available. Namespace
 // entry is delegated to nsenter(1) so that the daemon does not have to perform
 // setns(2) itself.
-func (n *Nspawn) Run(ctx context.Context, name string, e Exec) (int, error) {
-	cmd, err := n.command(ctx, name, e)
+func (n *Nspawn) Run(ctx context.Context, vm *state.VM, e Exec) (int, error) {
+	cmd, err := n.command(ctx, vm.Name, e)
 	if err != nil {
 		return 1, err
 	}
@@ -342,15 +335,15 @@ func (n *Nspawn) Run(ctx context.Context, name string, e Exec) (int, error) {
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
-		return 1, fmt.Errorf("enter container %s: %w", name, err)
+		return 1, fmt.Errorf("enter container %s: %w", vm.Name, err)
 	}
 	return 0, nil
 }
 
-// Terminal allocates a pseudo terminal from the container's own devpts
+// terminal allocates a pseudo terminal from the container's own devpts
 // instance. The slave appears as /dev/pts/<n> inside the container, which is
 // what makes ttyname(3) and the `tty` command work.
-func (n *Nspawn) Terminal(ctx context.Context, name string) (*tty.Terminal, error) {
+func (n *Nspawn) terminal(ctx context.Context, name string) (*tty.Terminal, error) {
 	pid, err := n.Leader(ctx, name)
 	if err != nil {
 		return nil, err
@@ -361,16 +354,86 @@ func (n *Nspawn) Terminal(ctx context.Context, name string) (*tty.Terminal, erro
 // StartProcess starts a command inside the container and returns the running
 // process. It is used for interactive sessions where the caller owns the
 // standard streams.
-func (n *Nspawn) StartProcess(ctx context.Context, name string, e Exec) (*exec.Cmd, error) {
-	cmd, err := n.command(ctx, name, e)
+func (n *Nspawn) StartProcess(ctx context.Context, vm *state.VM, e Exec) (Process, error) {
+	cmd, err := n.command(ctx, vm.Name, e)
 	if err != nil {
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("enter container %s: %w", name, err)
+		return nil, fmt.Errorf("enter container %s: %w", vm.Name, err)
 	}
-	return cmd, nil
+	return cmdProcess{cmd}, nil
 }
+
+// StartTerminal runs a command on a pseudo terminal allocated from the
+// container's devpts instance, so that the terminal is resolvable inside the
+// container. The master carries the data and the slave is handed to the
+// process that runs in the container.
+func (n *Nspawn) StartTerminal(ctx context.Context, vm *state.VM, e Exec, rows, cols int) (Terminal, error) {
+	term, err := n.terminal(ctx, vm.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := term.SetSize(rows, cols); err != nil {
+		term.Close()
+		return nil, err
+	}
+	e.Stdin, e.Stdout, e.Stderr = term.Slave, term.Slave, term.Slave
+	e.PTY = true
+	proc, err := n.StartProcess(ctx, vm, e)
+	if err != nil {
+		term.Close()
+		return nil, err
+	}
+	// The descriptor is captured now so that readers never see the field
+	// while Close clears it.
+	return &nspawnTerminal{term: term, master: term.Master, proc: proc}, nil
+}
+
+// Dial connects to a port of the container over the bridge, with the address
+// the daemon assigned to it.
+func (n *Nspawn) Dial(ctx context.Context, vm *state.VM, port int) (net.Conn, error) {
+	if vm.IP == "" {
+		return nil, fmt.Errorf("container %q has no address yet", vm.Name)
+	}
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	return dialer.DialContext(ctx, "tcp", net.JoinHostPort(vm.IP, strconv.Itoa(port)))
+}
+
+// cmdProcess is a process started on this host.
+type cmdProcess struct{ cmd *exec.Cmd }
+
+func (p cmdProcess) Wait() (int, error) {
+	if err := p.cmd.Wait(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode(), nil
+		}
+		return 1, err
+	}
+	return 0, nil
+}
+
+// nspawnTerminal is a process running on a terminal of the container's devpts.
+type nspawnTerminal struct {
+	term   *tty.Terminal
+	master *os.File
+	proc   Process
+}
+
+func (t *nspawnTerminal) Read(p []byte) (int, error)  { return t.master.Read(p) }
+func (t *nspawnTerminal) Write(p []byte) (int, error) { return t.master.Write(p) }
+func (t *nspawnTerminal) Resize(rows, cols int) error { return t.term.SetSize(rows, cols) }
+
+func (t *nspawnTerminal) Wait() (int, error) {
+	code, err := t.proc.Wait()
+	// Closing the container side releases the terminal: a reader of the
+	// master sees the end of file and a writer fails on its next write.
+	_ = t.term.CloseSlave()
+	return code, err
+}
+
+func (t *nspawnTerminal) Close() error { return t.term.Close() }
 
 func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, error) {
 	pid, err := n.Leader(ctx, name)
@@ -381,7 +444,7 @@ func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, e
 	cmd := exec.CommandContext(ctx, "nsenter", args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = e.Stdin, e.Stdout, e.Stderr
 	if len(e.Env) > 0 {
-		cmd.Env = mergeEnv(os.Environ(), e.Env)
+		cmd.Env = process.MergeEnv(os.Environ(), e.Env)
 	}
 	if e.PTY {
 		// Make the allocated terminal the controlling terminal of the
@@ -406,39 +469,11 @@ func (n *Nspawn) command(ctx context.Context, name string, e Exec) (*exec.Cmd, e
 	return cmd, nil
 }
 
-// mergeEnv returns base with the entries of extra applied on top. A variable
-// is replaced instead of duplicated so that the last value is the effective
-// one, matching what a shell would do when it sees both.
-func mergeEnv(base, extra []string) []string {
-	replaced := make(map[string]bool, len(extra))
-	for _, kv := range extra {
-		if name, _, ok := strings.Cut(kv, "="); ok {
-			replaced[name] = true
-		}
-	}
-	merged := make([]string, 0, len(base)+len(extra))
-	for _, kv := range base {
-		name, _, ok := strings.Cut(kv, "=")
-		if ok && replaced[name] {
-			continue
-		}
-		merged = append(merged, kv)
-	}
-	return append(merged, extra...)
-}
-
-// Status summarises the runtime state of a container.
-type Status struct {
-	Running bool
-	Unit    string
-	Since   time.Time
-	Leader  int
-}
-
 // StatusOf inspects the container through systemd.
-func (n *Nspawn) StatusOf(ctx context.Context, name string) Status {
+func (n *Nspawn) StatusOf(ctx context.Context, vm *state.VM) Status {
+	name := vm.Name
 	st := Status{Unit: Unit(name)}
-	if !n.Running(ctx, name) {
+	if !n.running(ctx, name) {
 		return st
 	}
 	st.Running = true
@@ -454,17 +489,9 @@ func (n *Nspawn) StatusOf(ctx context.Context, name string) Status {
 	return st
 }
 
-// Metrics samples the cgroup counters of a running container.
-type Metrics struct {
-	CPUUsageNS   int64
-	MemoryBytes  int64
-	MemorySwap   int64
-	MemoryLimit  int64
-	ProcessCount int64
-}
-
 // Collect reads the cgroup values of a container through systemctl show.
-func (n *Nspawn) Collect(ctx context.Context, name string) (Metrics, error) {
+func (n *Nspawn) Collect(ctx context.Context, vm *state.VM) (Metrics, error) {
+	name := vm.Name
 	props := []string{
 		"CPUUsageNSec",
 		"MemoryCurrent",

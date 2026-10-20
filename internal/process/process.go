@@ -10,6 +10,7 @@ package process
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -35,4 +36,25 @@ func Command(ctx context.Context, name string, args ...string) *exec.Cmd {
 // Output runs the command and returns its combined output.
 func Output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return Command(ctx, name, args...).CombinedOutput()
+}
+
+// MergeEnv returns base with the entries of extra applied on top. A variable
+// is replaced instead of duplicated so that the last value is the effective
+// one, matching what a shell would do when it sees both.
+func MergeEnv(base, extra []string) []string {
+	replaced := make(map[string]bool, len(extra))
+	for _, kv := range extra {
+		if name, _, ok := strings.Cut(kv, "="); ok {
+			replaced[name] = true
+		}
+	}
+	merged := make([]string, 0, len(base)+len(extra))
+	for _, kv := range base {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && replaced[name] {
+			continue
+		}
+		merged = append(merged, kv)
+	}
+	return append(merged, extra...)
 }

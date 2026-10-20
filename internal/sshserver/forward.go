@@ -237,9 +237,9 @@ func (s *Server) handleDirectTCPIP(ctx context.Context, conn *ssh.ServerConn, ne
 //
 // A loopback target of a container session refers to the container itself,
 // which is what a client writes for `ssh -L 8080:localhost:80 name@host`. The
-// container is reachable over the bridge with the address the daemon assigned
-// to it, so the connection is made from the host to that address. Every other
-// target is a plain TCP connection from the host, which is what
+// backend of the container makes that connection: a local container is
+// reached over the bridge with the address the daemon assigned to it. Every
+// other target is a plain TCP connection from the host, which is what
 // `ssh -L 5432:db.example.com:5432` needs.
 func (s *Server) dialTunnelTarget(ctx context.Context, user, host string, port uint32) (net.Conn, error) {
 	address := net.JoinHostPort(host, strconv.Itoa(int(port)))
@@ -250,15 +250,10 @@ func (s *Server) dialTunnelTarget(ctx context.Context, user, host string, port u
 		return dialer.DialContext(ctx, "tcp", address)
 	}
 
-	vm, ok := s.state.Get(name)
-	if !ok || vm.IP == "" {
-		return nil, fmt.Errorf("container %q has no address yet", name)
+	if _, ok := s.state.Get(name); !ok {
+		return nil, fmt.Errorf("container %q not found", name)
 	}
-	if err := s.vms.EnsureStarted(ctx, name); err != nil {
-		return nil, err
-	}
-	containerAddress := net.JoinHostPort(vm.IP, strconv.Itoa(int(port)))
-	conn, err := dialer.DialContext(ctx, "tcp", containerAddress)
+	conn, err := s.vms.Dial(ctx, name, int(port))
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s in container %s: %w", address, name, err)
 	}

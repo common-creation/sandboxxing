@@ -50,6 +50,72 @@ type VM struct {
 	// Podman, ...). It is set by `new --nested`; the host wide `nested` option
 	// enables it for every container.
 	Nested bool `json:"nested,omitempty"`
+	// Backend names the backend that runs this container. Containers created
+	// before backends could be chosen have none and run with systemd-nspawn.
+	Backend string `json:"backend,omitempty"`
+	// MicroVM holds the AWS resources of a container run by the microvm
+	// backend.
+	MicroVM *MicroVM `json:"microvm,omitempty"`
+	// AutoStop is how long a container run by the microvm backend keeps
+	// running without an SSH connection. Nil uses DefaultAutoStop and zero
+	// keeps it running. It is read with AutoStopOf.
+	AutoStop *config.Duration `json:"autostop,omitempty"`
+}
+
+// DefaultAutoStop is the autostop time of a container that sets none.
+const DefaultAutoStop = 30 * time.Minute
+
+// AutoStopAfter returns the autostop time of the container; zero means never.
+func (v *VM) AutoStopAfter() time.Duration {
+	if v.AutoStop == nil {
+		return DefaultAutoStop
+	}
+	return v.AutoStop.Duration()
+}
+
+// MicroVM is the state of a container that runs as AWS Lambda MicroVMs. The
+// container outlives each MicroVM: when one reaches its maximum duration the
+// next is started with the same home directory, and the generation counts
+// them.
+type MicroVM struct {
+	// InstanceID identifies the container in AWS. It names the directory of
+	// the home directory and the execution role, so that a container created
+	// later under the same name never sees the files of this one.
+	InstanceID string `json:"instance_id"`
+	// AccessPointID and AccessPointARN are the EFS access point of the home
+	// directory.
+	AccessPointID  string `json:"access_point_id,omitempty"`
+	AccessPointARN string `json:"access_point_arn,omitempty"`
+	// RoleName and RoleARN are the execution role, which may mount only the
+	// access point of this container.
+	RoleName string `json:"role_name,omitempty"`
+	RoleARN  string `json:"role_arn,omitempty"`
+	// ImageARN and ImageVersion are the MicroVM image.
+	ImageARN     string `json:"image_arn"`
+	ImageVersion string `json:"image_version,omitempty"`
+
+	// The fields below describe the current MicroVM. ID is empty while none
+	// runs.
+	ID         string    `json:"id,omitempty"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	Generation int       `json:"generation,omitempty"`
+	// Secret authenticates the daemon at the agent of the current MicroVM.
+	Secret string `json:"secret,omitempty"`
+}
+
+// The backends that can run a container.
+const (
+	BackendNspawn  = "nspawn"
+	BackendMicroVM = "microvm"
+)
+
+// BackendName returns the backend that runs the container.
+func (v *VM) BackendName() string {
+	if v.Backend == "" {
+		return BackendNspawn
+	}
+	return v.Backend
 }
 
 // State is the whole persisted state file.
@@ -140,7 +206,8 @@ func (s *State) Add(vm *VM) error {
 		}
 		vm.MachineID = id
 	}
-	if vm.IP == "" {
+	// Only a container on this host is connected to the bridge.
+	if vm.IP == "" && vm.BackendName() == BackendNspawn {
 		ip, err := s.allocIPLocked()
 		if err != nil {
 			return err
@@ -235,6 +302,63 @@ func (s *State) Update(name string, f func(vm *VM) error) error {
 	if err := f(vm); err != nil {
 		return err
 	}
+	return s.saveLocked()
+}
+
+// MicroVMOf returns a copy of the MicroVM state of a container. The microvm
+// backend changes it while sessions read it, so it is only accessed under the
+// lock.
+func (s *State) MicroVMOf(name string) (MicroVM, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.VMs[name]
+	if !ok || vm.MicroVM == nil {
+		return MicroVM{}, false
+	}
+	return *vm.MicroVM, true
+}
+
+// UpdateMicroVM changes the MicroVM state of a container and persists it.
+func (s *State) UpdateMicroVM(name string, f func(mv *MicroVM) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.VMs[name]
+	if !ok {
+		return fmt.Errorf("vm %q not found", name)
+	}
+	if vm.MicroVM == nil {
+		return fmt.Errorf("vm %q is not a MicroVM", name)
+	}
+	mv := *vm.MicroVM
+	if err := f(&mv); err != nil {
+		return err
+	}
+	vm.MicroVM = &mv
+	return s.saveLocked()
+}
+
+// AutoStopOf returns the autostop time of a container. It can be changed
+// while the containers are checked, so it is only accessed under the lock.
+func (s *State) AutoStopOf(name string) (time.Duration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.VMs[name]
+	if !ok {
+		return 0, false
+	}
+	return vm.AutoStopAfter(), true
+}
+
+// SetAutoStop changes the autostop time of a container and persists it.
+func (s *State) SetAutoStop(name string, d time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vm, ok := s.VMs[name]
+	if !ok {
+		return fmt.Errorf("vm %q not found", name)
+	}
+	v := config.Duration(d)
+	vm.AutoStop = &v
 	return s.saveLocked()
 }
 

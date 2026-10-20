@@ -159,3 +159,21 @@ func TestHumanDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestAutoStopValues(t *testing.T) {
+	for in, want := range map[string]string{"30m": "30m", "2h": "2h", "90m": "1h30m", "0": "never", "45s": "45s"} {
+		d, err := parseAutoStop(in)
+		if err != nil || d == nil {
+			t.Fatalf("parseAutoStop(%q) = %v, %v", in, d, err)
+		}
+		if got := autoStopText(*d); got != want {
+			t.Errorf("autoStopText(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if d, err := parseAutoStop(""); d != nil || err != nil {
+		t.Errorf("parseAutoStop(\"\") = %v, %v", d, err)
+	}
+	if _, err := parseAutoStop("soon"); err == nil {
+		t.Error("parseAutoStop accepted soon")
+	}
+}

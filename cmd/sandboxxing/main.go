@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+
+	"github.com/common-creation/sandboxxing/internal/backend"
 	"github.com/common-creation/sandboxxing/internal/cli"
 	"github.com/common-creation/sandboxxing/internal/config"
 	"github.com/common-creation/sandboxxing/internal/sshserver"
@@ -125,7 +130,17 @@ before an uninstall. Stop the service first.
 	}
 	defer lock.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	vms := vm.New(cfg, log, st)
+	if cfg.MicroVM != nil {
+		awsCfg, err := loadAWS(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		vms.EnableMicroVM(backend.NewMicroVM(ctx, cfg.MicroVM, log, st, awsCfg))
+	}
 
 	runner := cli.New(cfg, log, vms, st, advertisedHost(cfg))
 	srv, err := sshserver.New(cfg, log, vms, st, runner)
@@ -140,9 +155,6 @@ before an uninstall. Stop the service first.
 		fmt.Println(srv.Password())
 		return nil
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if err := vms.EnsureHost(ctx); err != nil {
 		// Containers keep working, but without the bridge and NAT they have
@@ -161,6 +173,12 @@ before an uninstall. Stop the service first.
 	if err := vms.MigrateNetwork(ctx); err != nil {
 		log.Warn("could not update the network configuration of existing containers", "error", err)
 	}
+	// MicroVMs keep running while the daemon is down. The running ones are
+	// watched again, and the ones that ended are replaced on the next login.
+	vms.Reconcile(ctx)
+	// MicroVMs without SSH connections are stopped, and started again on
+	// the next login.
+	go vms.AutoStop(ctx)
 
 	log.Info("sandboxxing ready",
 		"version", version,
@@ -191,6 +209,19 @@ func runChecks(cfg *config.Config, log *slog.Logger, st *state.State) error {
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d authentication check(s) failed", failed)
+	}
+
+	if cfg.MicroVM != nil {
+		c := microvmCheck(ctx, cfg)
+		result := "ok"
+		if !c.OK {
+			result = "FAIL"
+			failed++
+		}
+		fmt.Printf("%-6s %-18s %s\n", result, c.Name, c.Detail)
+		if failed > 0 {
+			return errors.New("the AWS credentials of the microvm backend are not usable")
+		}
 	}
 
 	for _, c := range vms.HostCheck(ctx) {
@@ -370,4 +401,34 @@ func newLogger(level string) *slog.Logger {
 		l = slog.LevelInfo
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l}))
+}
+
+// loadAWS loads the AWS configuration of the microvm backend from the usual
+// sources: the environment, the shared configuration files and the instance
+// role.
+func loadAWS(ctx context.Context, cfg *config.Config) (aws.Config, error) {
+	var opts []func(*awsconfig.LoadOptions) error
+	if cfg.MicroVM.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(cfg.MicroVM.Region))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
+	}
+	if awsCfg.Region == "" {
+		return aws.Config{}, errors.New("no AWS region is configured: set microvm.region")
+	}
+	return awsCfg, nil
+}
+
+// microvmCheck verifies that the daemon has AWS credentials.
+func microvmCheck(ctx context.Context, cfg *config.Config) hostCheck {
+	awsCfg, err := loadAWS(ctx, cfg)
+	if err != nil {
+		return hostCheck{Name: "aws credentials", Detail: err.Error()}
+	}
+	if _, err := awsCfg.Credentials.Retrieve(ctx); err != nil {
+		return hostCheck{Name: "aws credentials", Detail: err.Error()}
+	}
+	return hostCheck{Name: "aws credentials", OK: true, Detail: "region " + awsCfg.Region}
 }

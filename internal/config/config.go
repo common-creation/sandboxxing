@@ -116,6 +116,13 @@ type Config struct {
 	// LogLevel controls daemon verbosity: debug, info, warn, error.
 	LogLevel string `json:"log_level"`
 
+	// DefaultBackend is the backend used by `new` when --backend is omitted:
+	// "nspawn" (the default) or "microvm".
+	DefaultBackend string `json:"default_backend"`
+	// MicroVM enables the backend that runs containers as AWS Lambda
+	// MicroVMs. Nil disables it.
+	MicroVM *MicroVMConfig `json:"microvm"`
+
 	// Path is the file the configuration was loaded from.
 	Path string `json:"-"`
 }
@@ -346,6 +353,22 @@ func (c *Config) Validate() error {
 		if u == "" || strings.ContainsAny(u, " \t@") {
 			return fmt.Errorf("invalid admin user name %q", u)
 		}
+	}
+	if c.MicroVM != nil {
+		if err := c.MicroVM.validate(); err != nil {
+			return err
+		}
+	}
+	switch c.DefaultBackend {
+	case "":
+		c.DefaultBackend = "nspawn"
+	case "nspawn":
+	case "microvm":
+		if c.MicroVM == nil {
+			return errors.New(`default_backend is "microvm" but the microvm section is missing`)
+		}
+	default:
+		return fmt.Errorf("invalid default_backend %q: use nspawn or microvm", c.DefaultBackend)
 	}
 	return nil
 }

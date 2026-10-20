@@ -2,10 +2,8 @@ package sshserver
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"sync"
 
 	"golang.org/x/crypto/ssh"
@@ -16,24 +14,20 @@ import (
 // runPTY runs a command inside the container on a pseudo terminal and bridges
 // it to the SSH channel.
 //
-// The terminal is allocated from the container's own devpts instance, not from
-// the host, so that the pts node is resolvable inside the container and
-// programs such as `tty` work. The master therefore carries the data and the
-// slave is handed to the process that runs in the container.
+// The backend allocates the terminal where the command runs, so that the
+// terminal is resolvable inside the container and programs such as `tty`
+// work. The SSH channel is connected to the other side of the terminal.
 func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, dir string, ch ssh.Channel, session *sessionRequest) (int, error) {
-	term, err := s.vms.Terminal(ctx, name)
+	rows, cols := session.size()
+	term, err := s.vms.StartTerminal(ctx, name, vm.Exec{
+		Argv: argv,
+		Env:  env,
+		Dir:  dir,
+	}, rows, cols)
 	if err != nil {
 		return 1, err
 	}
 	defer term.Close()
-
-	rows, cols := session.size()
-	if err := term.SetSize(rows, cols); err != nil {
-		return 1, err
-	}
-	// The descriptor is captured before the goroutines start so that they
-	// never read the field while Close clears it.
-	master := term.Master
 
 	resize := session.enableResize()
 	resizeStopped := false
@@ -45,23 +39,10 @@ func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, di
 	}
 	defer stopResize()
 
-	cmd, err := s.vms.StartProcess(ctx, name, vm.Exec{
-		Argv:   argv,
-		Env:    env,
-		Dir:    dir,
-		Stdin:  term.Slave,
-		Stdout: term.Slave,
-		Stderr: term.Slave,
-		PTY:    true,
-	})
-	if err != nil {
-		return 1, err
-	}
-
 	outputDone := make(chan struct{})
 	go func() {
 		defer close(outputDone)
-		_, _ = io.Copy(ch, master)
+		_, _ = io.Copy(ch, term)
 		// Tell the client that no more data follows. The exit status is sent
 		// separately, after this function returns.
 		_ = ch.CloseWrite()
@@ -71,7 +52,7 @@ func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, di
 	go func() {
 		defer close(resizeDone)
 		for size := range resize {
-			_ = term.SetSize(size.rows, size.cols)
+			_ = term.Resize(size.rows, size.cols)
 		}
 	}()
 
@@ -79,26 +60,21 @@ func (s *Server) runPTY(ctx context.Context, name string, argv, env []string, di
 	// below: its read on the SSH channel only returns when the client closes
 	// it, and an SSH client is not required to do so after the shell exits.
 	go func() {
-		_, _ = io.Copy(master, ch)
+		_, _ = io.Copy(term, ch)
 	}()
 
-	waitErr := cmd.Wait()
-	// Closing the container side releases the terminal: the output pump sees
-	// the end of file and the input pump fails on its next write.
-	_ = term.CloseSlave()
+	// Waiting releases the container side of the terminal: the output pump
+	// sees the end of file and the input pump fails on its next write.
+	code, waitErr := term.Wait()
 	<-outputDone
 
 	stopResize()
 	<-resizeDone
 
 	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			return exitErr.ExitCode(), nil
-		}
 		return 1, waitErr
 	}
-	return 0, nil
+	return code, nil
 }
 
 // runPipe runs a command without a terminal and forwards the standard streams

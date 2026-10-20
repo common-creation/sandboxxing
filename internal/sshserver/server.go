@@ -231,6 +231,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	if name, ok := s.containerFor(sshConn.User()); ok {
 		s.trackConn(name, sshConn)
 		defer s.untrackConn(name, sshConn)
+		// An open connection keeps a MicroVM from being stopped for
+		// inactivity, and its end starts the autostop time.
+		defer s.vms.Connected(name)()
 	}
 
 	// Port forwarding lives on the same connection: the global requests

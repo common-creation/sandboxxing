@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/common-creation/sandboxxing/internal/config"
 	"github.com/common-creation/sandboxxing/internal/progress"
@@ -29,6 +30,8 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		"no-start":     {kind: flagBool},
 		"prompt":       {kind: flagString},
 		"nested":       {kind: flagBool},
+		"backend":      {kind: flagString},
+		"autostop":     {kind: flagString},
 	})
 	if err != nil {
 		return r.fail(sess, err)
@@ -43,6 +46,7 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		Comment: opts.str("comment"),
 		Tags:    opts.strs("tag"),
 		Nested:  opts.bool("nested"),
+		Backend: opts.str("backend"),
 	}
 	if create.CPU, err = r.parseCPU(opts.str("cpu")); err != nil {
 		return r.fail(sess, err)
@@ -57,6 +61,9 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 		return r.fail(sess, err)
 	}
 	if create.Shares, err = parseShares(opts.strs("share")); err != nil {
+		return r.fail(sess, err)
+	}
+	if create.AutoStop, err = parseAutoStop(opts.str("autostop")); err != nil {
 		return r.fail(sess, err)
 	}
 
@@ -244,6 +251,70 @@ func (r *Runner) cmdResize(ctx context.Context, args []string, sess *IO) int {
 	return 0
 }
 
+// cmdEdit changes the settings of a container.
+func (r *Runner) cmdEdit(ctx context.Context, args []string, sess *IO) int {
+	opts, err := parseFlags(args, map[string]flagSpec{
+		"autostop": {kind: flagString},
+		"json":     {kind: flagBool},
+	})
+	if err != nil {
+		return r.fail(sess, err)
+	}
+	usage := errors.New("usage: edit <name> --autostop=DURATION")
+	if len(opts.positional) != 1 {
+		return r.fail(sess, usage)
+	}
+	name := opts.positional[0]
+	autoStop, err := parseAutoStop(opts.str("autostop"))
+	if err != nil {
+		return r.fail(sess, err)
+	}
+	if autoStop == nil {
+		return r.fail(sess, usage)
+	}
+	if err := r.vms.SetAutoStop(name, *autoStop); err != nil {
+		return r.fail(sess, err)
+	}
+	if opts.bool("json") {
+		info, err := r.vms.Stat(ctx, name)
+		if err != nil {
+			return r.fail(sess, err)
+		}
+		return r.writeJSON(sess, info)
+	}
+	fmt.Fprintf(sess.Out, "updated %s: autostop=%s\n", name, autoStopText(*autoStop))
+	return 0
+}
+
+// parseAutoStop parses an --autostop value such as 30m or 2h. Zero keeps the
+// container running, and an empty value leaves the setting alone.
+func parseAutoStop(value string) (*time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --autostop %q: use a duration such as 30m or 2h, or 0 to never stop", value)
+	}
+	return &d, nil
+}
+
+// autoStopText renders an autostop time: "30m", "1h30m" or "never".
+func autoStopText(d time.Duration) string {
+	if d == 0 {
+		return "never"
+	}
+	s := d.String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
 // cmdSSH implements the host side of the `ssh` helper. It runs a command in a
 // container from a control session.
 func (r *Runner) cmdSSH(ctx context.Context, args []string, sess *IO) int {
@@ -284,6 +355,9 @@ func (r *Runner) cmdSSH(ctx context.Context, args []string, sess *IO) int {
 		Stdout: sess.Out,
 		Stderr: sess.Err,
 	}
+	// The command reaches the container over this SSH connection, which
+	// keeps a MicroVM from being stopped for inactivity meanwhile.
+	defer r.vms.Connected(name)()
 	code, err := r.vms.Run(ctx, name, exec)
 	if err != nil {
 		return r.fail(sess, err)
@@ -393,6 +467,7 @@ func (r *Runner) runScript(ctx context.Context, name, script string) error {
 		f.Close()
 		return err
 	}
+	defer r.vms.Connected(name)()
 	exit, err := r.vms.Run(ctx, name, vm.Exec{
 		Argv:  []string{"/bin/bash", "-s"},
 		Stdin: io.Reader(f),

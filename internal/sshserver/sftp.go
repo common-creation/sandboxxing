@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os/exec"
 
 	"golang.org/x/crypto/ssh"
 
@@ -96,7 +95,7 @@ func (s *Server) serveContainerSFTP(ctx context.Context, name string, env []stri
 		return 1, err
 	}
 	s.log.Info("sftp session started", "container", name, "server", path)
-	cmd, err := s.vms.StartProcess(ctx, name, vm.Exec{
+	proc, err := s.vms.StartProcess(ctx, name, vm.Exec{
 		Argv:   []string{path},
 		Env:    env,
 		Dir:    dir,
@@ -107,14 +106,7 @@ func (s *Server) serveContainerSFTP(ctx context.Context, name string, env []stri
 	if err != nil {
 		return 1, err
 	}
-	if err := cmd.Wait(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), nil
-		}
-		return 1, err
-	}
-	return 0, nil
+	return proc.Wait()
 }
 
 // lookupContainerSFTPServer finds an executable sftp-server inside the

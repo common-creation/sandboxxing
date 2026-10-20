@@ -26,16 +26,22 @@ import (
 	"github.com/common-creation/sandboxxing/internal/process"
 	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
-	"github.com/common-creation/sandboxxing/internal/tty"
 )
 
 // Manager implements all container operations.
 type Manager struct {
-	cfg     *config.Config
-	log     *slog.Logger
-	state   *state.State
-	images  *image.Builder
-	backend *backend.Nspawn
+	cfg    *config.Config
+	log    *slog.Logger
+	state  *state.State
+	images *image.Builder
+	// nspawn runs the containers on this host. It is also reachable through
+	// backends; the disk image operations are specific to it.
+	nspawn *backend.Nspawn
+	// backends maps the backend names recorded in the state to the backends.
+	backends map[string]backend.Backend
+	// microvm runs containers as AWS Lambda MicroVMs. It is nil unless
+	// configured.
+	microvm *backend.MicroVM
 	host    *host.Manager
 
 	// mu guards the fields below, which coordinate offline operations on
@@ -47,18 +53,41 @@ type Manager struct {
 	busy map[string]string
 	// disconnect closes the SSH connections of a container.
 	disconnect func(name string) int
+	// activity holds the SSH connections of each container, which decide
+	// when a MicroVM is stopped.
+	activity map[string]*activity
 }
 
 // New creates the operation manager.
 func New(cfg *config.Config, log *slog.Logger, st *state.State) *Manager {
+	nspawn := backend.New(cfg, log)
 	return &Manager{
-		cfg:     cfg,
-		log:     log,
-		state:   st,
-		images:  image.New(cfg, log),
-		backend: backend.New(cfg, log),
-		host:    host.New(cfg, log),
+		cfg:      cfg,
+		log:      log,
+		state:    st,
+		images:   image.New(cfg, log),
+		nspawn:   nspawn,
+		backends: map[string]backend.Backend{state.BackendNspawn: nspawn},
+		host:     host.New(cfg, log),
 	}
+}
+
+// backendFor returns the backend that runs a container.
+func (m *Manager) backendFor(vm *state.VM) (backend.Backend, error) {
+	b, ok := m.backends[vm.BackendName()]
+	if !ok {
+		return nil, fmt.Errorf("container %s uses the %s backend, which is not configured", vm.Name, vm.BackendName())
+	}
+	return b, nil
+}
+
+// requireNspawn fails for a container that is not run by systemd-nspawn. The
+// operations on disk images are only available for those.
+func requireNspawn(vm *state.VM, op string) error {
+	if vm.BackendName() != state.BackendNspawn {
+		return fmt.Errorf("%s is not supported for container %s, which uses the %s backend", op, vm.Name, vm.BackendName())
+	}
+	return nil
 }
 
 // Options are the container settings accepted by create and copy.
@@ -78,6 +107,12 @@ type Options struct {
 	// Podman, ...). The host wide "nested" option enables it for every
 	// container, so this only has to be set to opt in individually.
 	Nested bool
+	// Backend selects the backend that runs the container. Empty uses the
+	// configured default.
+	Backend string
+	// AutoStop is how long a MicroVM keeps running without an SSH
+	// connection. Nil uses state.DefaultAutoStop and zero keeps it running.
+	AutoStop *time.Duration
 }
 
 // Create builds a new container: the cached golden ext4 image is reflink
@@ -88,6 +123,21 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 	}
 	if len(opts.Comment) > 200 {
 		return nil, errors.New("comment must be at most 200 bytes")
+	}
+	if opts.Backend == "" {
+		opts.Backend = m.cfg.DefaultBackend
+	}
+	switch opts.Backend {
+	case state.BackendMicroVM:
+		return m.createMicroVM(ctx, opts)
+	case state.BackendNspawn, "":
+	default:
+		return nil, fmt.Errorf("unknown backend %q: use %s or %s", opts.Backend, state.BackendNspawn, state.BackendMicroVM)
+	}
+	if opts.AutoStop != nil {
+		if err := checkAutoStop(state.BackendNspawn, *opts.AutoStop); err != nil {
+			return nil, err
+		}
 	}
 	m.applyDefaults(&opts)
 	name, err := m.reserveName(opts.Name)
@@ -129,7 +179,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := m.backend.Start(ctx, vm, diskPath); err != nil {
+	if err := m.nspawn.Start(ctx, vm); err != nil {
 		return vm, fmt.Errorf("container created but failed to start: %w", err)
 	}
 	return vm, nil
@@ -142,6 +192,9 @@ func (m *Manager) Copy(ctx context.Context, src string, opts Options) (*state.VM
 	source, ok := m.state.Get(src)
 	if !ok {
 		return nil, fmt.Errorf("container %q not found", src)
+	}
+	if err := requireNspawn(source, "copying"); err != nil {
+		return nil, err
 	}
 	if opts.Image == "" {
 		opts.Image = source.Image
@@ -192,7 +245,7 @@ func (m *Manager) Copy(ctx context.Context, src string, opts Options) (*state.VM
 		return nil, err
 	}
 	m.log.Info("copied container", "source", src, "name", vm.Name)
-	if err := m.backend.Start(ctx, vm, dst); err != nil {
+	if err := m.nspawn.Start(ctx, vm); err != nil {
 		return vm, fmt.Errorf("container copied but failed to start: %w", err)
 	}
 	return vm, nil
@@ -269,14 +322,26 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
 	}
-	if err := m.backend.Stop(ctx, vm.Name); err != nil {
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return err
+	}
+	if r, ok := b.(remover); ok {
+		err = r.Remove(ctx, vm)
+	} else {
+		err = b.Stop(ctx, vm)
+	}
+	if err != nil {
 		return err
 	}
 	if err := m.state.Remove(name); err != nil {
 		return err
 	}
-	if err := os.Remove(m.diskPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove disk image of %s: %w", name, err)
+	m.forgetActivity(name)
+	if vm.BackendName() == state.BackendNspawn {
+		if err := os.Remove(m.diskPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove disk image of %s: %w", name, err)
+		}
 	}
 	m.log.Info("removed container", "name", name)
 	return nil
@@ -294,9 +359,17 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	if err := m.checkIdle(name); err != nil {
 		return err
 	}
-	if err := m.backend.Restart(ctx, vm, m.diskPath(name)); err != nil {
+	b, err := m.backendFor(vm)
+	if err != nil {
 		return err
 	}
+	if err := b.Stop(ctx, vm); err != nil {
+		return err
+	}
+	if err := b.Start(ctx, vm); err != nil {
+		return err
+	}
+	m.resetIdle(name)
 	m.log.Info("restarted container", "name", name)
 	return nil
 }
@@ -307,6 +380,9 @@ func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
+	}
+	if err := requireNspawn(vm, "resizing"); err != nil {
+		return err
 	}
 	if cpu < 0 || memory < 0 || disk < 0 {
 		return errors.New("sizes must not be negative")
@@ -329,10 +405,10 @@ func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk
 		defer done()
 	}
 
-	wasRunning := m.backend.Running(ctx, name)
+	wasRunning := m.nspawn.Running(ctx, vm)
 	if diskGrew {
 		progress.From(ctx).Step("growing the disk of %s to %s", name, config.DiskSize(disk).String())
-		if err := m.backend.Stop(ctx, name); err != nil {
+		if err := m.nspawn.Stop(ctx, vm); err != nil {
 			return err
 		}
 		if err := waitImageReleased(ctx, m.diskPath(name)); err != nil {
@@ -360,12 +436,12 @@ func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk
 	switch {
 	case !wasRunning:
 	case diskGrew:
-		if err := m.backend.Start(ctx, vm, m.diskPath(name)); err != nil {
+		if err := m.nspawn.Start(ctx, vm); err != nil {
 			return err
 		}
 	default:
 		// CPU and memory apply live; only the disk requires a reboot.
-		if err := m.backend.Limits(ctx, vm); err != nil {
+		if err := m.nspawn.Limits(ctx, vm); err != nil {
 			return err
 		}
 	}
@@ -413,7 +489,11 @@ func (m *Manager) Stat(ctx context.Context, name string) (Info, error) {
 
 func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 	info := Info{VM: vm, IP: vm.IP}
-	st := m.backend.StatusOf(ctx, vm.Name)
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return info
+	}
+	st := b.StatusOf(ctx, vm)
 	if !st.Running {
 		return info
 	}
@@ -421,7 +501,7 @@ func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 	if !st.Since.IsZero() {
 		info.Uptime = time.Since(st.Since)
 	}
-	if mm, err := m.backend.Collect(ctx, vm.Name); err == nil {
+	if mm, err := b.Collect(ctx, vm); err == nil {
 		info.Metrics = &mm
 	}
 	return info
@@ -450,12 +530,20 @@ func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
 			vm = updated
 		}
 	}
-	if m.backend.Running(ctx, name) {
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return err
+	}
+	if b.Running(ctx, vm) {
 		return nil
 	}
 	m.log.Info("starting container on demand", "name", name)
 	progress.From(ctx).Step("container %s was stopped, starting it", name)
-	return m.backend.Start(ctx, vm, m.diskPath(name))
+	if err := b.Start(ctx, vm); err != nil {
+		return err
+	}
+	m.resetIdle(name)
+	return nil
 }
 
 // MigrateNetwork brings every container created by an older release up to
@@ -477,7 +565,7 @@ func (m *Manager) MigrateNetwork(ctx context.Context) error {
 	for _, vm := range pending {
 		// Only containers that are running are started again; a stopped one
 		// is merely updated and stays stopped.
-		wasRunning := m.backend.Running(ctx, vm.Name)
+		wasRunning := m.nspawn.Running(ctx, vm)
 		if err := m.refreshNetConfig(ctx, vm); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", vm.Name, err))
 			continue
@@ -485,7 +573,7 @@ func (m *Manager) MigrateNetwork(ctx context.Context) error {
 		if !wasRunning {
 			continue
 		}
-		if err := m.backend.Start(ctx, vm, m.diskPath(vm.Name)); err != nil {
+		if err := m.nspawn.Start(ctx, vm); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", vm.Name, err))
 		}
 	}
@@ -502,9 +590,9 @@ func (m *Manager) refreshNetConfig(ctx context.Context, vm *state.VM) error {
 	m.log.Info("updating the network configuration of an existing container",
 		"name", vm.Name, "from", vm.NetConfig, "to", state.NetConfigVersion)
 	progress.From(ctx).Step("updating the network configuration of %s", vm.Name)
-	wasRunning := m.backend.Running(ctx, vm.Name)
+	wasRunning := m.nspawn.Running(ctx, vm)
 	if wasRunning {
-		if err := m.backend.Stop(ctx, vm.Name); err != nil {
+		if err := m.nspawn.Stop(ctx, vm); err != nil {
 			return err
 		}
 	}
@@ -522,24 +610,67 @@ func (m *Manager) refreshNetConfig(ctx context.Context, vm *state.VM) error {
 
 // Running reports whether the container is running.
 func (m *Manager) Running(ctx context.Context, name string) bool {
-	return m.backend.Running(ctx, name)
+	vm, ok := m.state.Get(name)
+	if !ok {
+		return false
+	}
+	b, err := m.backendFor(vm)
+	return err == nil && b.Running(ctx, vm)
+}
+
+// started starts a container when needed and returns it with its backend.
+func (m *Manager) started(ctx context.Context, name string) (*state.VM, backend.Backend, error) {
+	if err := m.EnsureStarted(ctx, name); err != nil {
+		return nil, nil, err
+	}
+	// The record is read again: starting may have updated it.
+	vm, ok := m.state.Get(name)
+	if !ok {
+		return nil, nil, fmt.Errorf("container %q not found", name)
+	}
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return nil, nil, err
+	}
+	return vm, b, nil
 }
 
 // Run executes a command inside a container, starting it when needed.
 func (m *Manager) Run(ctx context.Context, name string, e backend.Exec) (int, error) {
-	if err := m.EnsureStarted(ctx, name); err != nil {
+	vm, b, err := m.started(ctx, name)
+	if err != nil {
 		return 1, err
 	}
-	return m.backend.Run(ctx, name, e)
+	return b.Run(ctx, vm, e)
 }
 
 // StartProcess starts a command inside a container, starting the container
 // when needed, and returns the running process.
-func (m *Manager) StartProcess(ctx context.Context, name string, e backend.Exec) (*exec.Cmd, error) {
-	if err := m.EnsureStarted(ctx, name); err != nil {
+func (m *Manager) StartProcess(ctx context.Context, name string, e backend.Exec) (backend.Process, error) {
+	vm, b, err := m.started(ctx, name)
+	if err != nil {
 		return nil, err
 	}
-	return m.backend.StartProcess(ctx, name, e)
+	return b.StartProcess(ctx, vm, e)
+}
+
+// StartTerminal starts a command on a pseudo terminal inside a container,
+// starting the container when needed.
+func (m *Manager) StartTerminal(ctx context.Context, name string, e backend.Exec, rows, cols int) (backend.Terminal, error) {
+	vm, b, err := m.started(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return b.StartTerminal(ctx, vm, e, rows, cols)
+}
+
+// Dial connects to a TCP port of a container, starting it when needed.
+func (m *Manager) Dial(ctx context.Context, name string, port int) (net.Conn, error) {
+	vm, b, err := m.started(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return b.Dial(ctx, vm, port)
 }
 
 // HomeDir returns the home directory of a user inside a container. The path is
@@ -579,15 +710,6 @@ func (m *Manager) Output(ctx context.Context, name string, argv []string) ([]byt
 	return buf.Bytes(), nil
 }
 
-// Terminal allocates a pseudo terminal from the container's devpts instance,
-// so that the terminal is resolvable inside the container.
-func (m *Manager) Terminal(ctx context.Context, name string) (*tty.Terminal, error) {
-	if err := m.EnsureStarted(ctx, name); err != nil {
-		return nil, err
-	}
-	return m.backend.Terminal(ctx, name)
-}
-
 // Images lists the cached base images.
 func (m *Manager) Images() ([]string, error) { return m.images.List() }
 
@@ -610,10 +732,12 @@ func (m *Manager) StopAll(ctx context.Context) (int, error) {
 	var errs []error
 	stopped := 0
 	for _, vm := range m.state.List() {
-		if !m.backend.Running(ctx, vm.Name) {
+		// Only the containers on this host use its network; a MicroVM keeps
+		// running.
+		if vm.BackendName() != state.BackendNspawn || !m.nspawn.Running(ctx, vm) {
 			continue
 		}
-		if err := m.backend.Stop(ctx, vm.Name); err != nil {
+		if err := m.nspawn.Stop(ctx, vm); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", vm.Name, err))
 			continue
 		}
@@ -627,7 +751,7 @@ func (m *Manager) StopAll(ctx context.Context) (int, error) {
 func (m *Manager) HostCheck(ctx context.Context) []host.Checkable { return m.host.Check(ctx) }
 
 func (m *Manager) diskPath(name string) string {
-	return filepath.Join(m.DataDir(), name+".img")
+	return m.nspawn.DiskPath(name)
 }
 
 // prepareDisk configures the container specific files inside the disk image.
