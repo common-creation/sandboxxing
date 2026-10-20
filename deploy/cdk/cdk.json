@@ -2,7 +2,7 @@
   "app": "npx ts-node --prefer-ts-exts bin/app.ts",
   "context": {
     "imageName": "sandboxxing",
-    "memoryMiB": 2048,
+    "memoryMiB": 4096,
     "natGateways": 1
   }
 }

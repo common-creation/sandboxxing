@@ -52,7 +52,8 @@ class DestroyEverything implements IAspect {
  *                     `aws lambda-microvms list-managed-microvm-image-versions`
  *   baseImageArn      managed base image (default: al2023-1 of the region)
  *   imageName         name of the MicroVM image (default: sandboxxing)
- *   memoryMiB         baseline memory of a MicroVM (default: 2048)
+ *   memoryMiB         baseline memory of a MicroVM, which also sets the vCPUs
+ *                     and the disk (default: 4096, 2 vCPUs and 16 GB of disk)
  *   natGateways       NAT gateways for internet access over the VPC (default: 1)
  */
 export class SandboxxingMicroVMStack extends Stack {
@@ -71,7 +72,7 @@ export class SandboxxingMicroVMStack extends Stack {
     const baseImageArn: string =
       this.node.tryGetContext('baseImageArn') ?? `arn:${Aws.PARTITION}:lambda:${Aws.REGION}:aws:microvm-image:al2023-1`;
     const imageName: string = this.node.tryGetContext('imageName') ?? 'sandboxxing';
-    const memoryMiB = Number(this.node.tryGetContext('memoryMiB') ?? 2048);
+    const memoryMiB = Number(this.node.tryGetContext('memoryMiB') ?? 4096);
     const natGateways = Number(this.node.tryGetContext('natGateways') ?? 1);
 
     const imageDir = path.join(__dirname, '..', '..', 'microvm-image');

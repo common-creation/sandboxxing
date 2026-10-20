@@ -641,7 +641,9 @@ ssh cloudbox@host -p 2222        # ログイン、scp/sftp、ssh -L はそのま
   引き継がれるのは `/root` だけです。8 時間到達前に AWS から届く通知は
   ありません(届くのは終了時の hook だけです)。
 - サイズは MicroVM イメージで決まります。`--cpu/--memory/--disk/--nested`、
-  `cp`、`resize` は使えません。
+  `cp`、`resize` は使えません。既定はベースライン 4 GB / 2 vCPU
+  (ピーク時は最大 16 GB / 8 vCPU)、ディスク 16 GB です。CDK スタックの context
+  `memoryMiB` で変更できます。
 - ARM64 のみです。利用できるリージョンも限られます。
 - `rm` はホームディレクトリの中身、access point、実行ロールを削除します。
   中身を消すために一時的に MicroVM を起動します。

@@ -657,7 +657,9 @@ ssh cloudbox@host -p 2222        # logins, scp/sftp and ssh -L work as usual
   does. AWS sends no notice before the eight hours are up; the hook arrives
   only at termination.
 - The size comes from the MicroVM image. `--cpu/--memory/--disk/--nested`,
-  `cp` and `resize` are not available.
+  `cp` and `resize` are not available. The default is a baseline
+  of 4 GB and 2 vCPUs (up to 16 GB and 8 vCPUs at peak) with 16 GB of disk;
+  the `memoryMiB` context of the CDK stack changes it.
 - MicroVMs are ARM64 only and available in a few regions.
 - `rm` deletes the files of the home directory, the access point and the
   execution role. It starts a MicroVM for a moment to delete the files.
