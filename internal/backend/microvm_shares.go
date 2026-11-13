@@ -9,6 +9,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/efs"
@@ -68,15 +70,9 @@ func (b *MicroVM) grant(ctx context.Context, vm *state.VM, mv state.MicroVM) ([]
 	if err := b.CheckShares(shares); err != nil {
 		return nil, err
 	}
-	mounts := make([]agent.ShareMount, 0, len(shares))
-	grants := make([]shareGrant, 0, len(shares))
-	for _, share := range shares {
-		ap, err := b.shareAccessPoint(ctx, path.Clean(share.Path))
-		if err != nil {
-			return nil, err
-		}
-		mounts = append(mounts, agent.ShareMount{AccessPointID: ap.ID, Target: share.MountTarget(), ReadOnly: share.ReadOnly})
-		grants = append(grants, shareGrant{ARN: ap.ARN, ReadOnly: share.ReadOnly})
+	mounts, grants, err := b.shared.resolve(ctx, shares)
+	if err != nil {
+		return nil, err
 	}
 	policy, err := b.rolePolicy(mv, grants)
 	if err != nil {
@@ -101,9 +97,63 @@ func (b *MicroVM) grant(ctx context.Context, vm *state.VM, mv state.MicroVM) ([]
 	return mounts, nil
 }
 
+// sharedDirectories resolves one access point per directory of this filesystem.
+type sharedDirectories struct {
+	efs          EFSAPI
+	fileSystemID string
+	poll         time.Duration
+	// Lambda uses its original token so existing creates remain idempotent.
+	tagFileSystem bool
+	shareMu       sync.Mutex
+	shareAPs      map[string]shareAP
+}
+
+func newSharedDirectories(efs EFSAPI, fs string, poll time.Duration, tagFileSystem bool) *sharedDirectories {
+	return &sharedDirectories{efs: efs, fileSystemID: fs, poll: poll, tagFileSystem: tagFileSystem}
+}
+
+func (b *sharedDirectories) resolve(ctx context.Context, shares []config.Share) ([]agent.ShareMount, []shareGrant, error) {
+	mounts := make([]agent.ShareMount, 0, len(shares))
+	grants := make([]shareGrant, 0, len(shares))
+	for _, share := range shares {
+		ap, err := b.shareAccessPoint(ctx, path.Clean(share.Path))
+		if err != nil {
+			return nil, nil, err
+		}
+		mounts = append(mounts, agent.ShareMount{AccessPointID: ap.ID, Target: share.MountTarget(), ReadOnly: share.ReadOnly})
+		grants = append(grants, shareGrant{ARN: ap.ARN, ReadOnly: share.ReadOnly})
+	}
+	return mounts, grants, nil
+}
+
+// waitAccessPoint waits until a new access point can be mounted.
+func (b *sharedDirectories) waitAccessPoint(ctx context.Context, id string) error {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		out, err := b.efs.DescribeAccessPoints(ctx, &efs.DescribeAccessPointsInput{AccessPointId: aws.String(id)})
+		if err != nil {
+			return fmt.Errorf("describe access point %s: %w", id, err)
+		}
+		if len(out.AccessPoints) == 1 {
+			switch out.AccessPoints[0].LifeCycleState {
+			case efstypes.LifeCycleStateAvailable:
+				return nil
+			case efstypes.LifeCycleStateError, efstypes.LifeCycleStateDeleting, efstypes.LifeCycleStateDeleted:
+				return fmt.Errorf("access point %s is %s", id, out.AccessPoints[0].LifeCycleState)
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("access point %s did not become available", id)
+		}
+		if err := sleep(ctx, b.poll); err != nil {
+			return err
+		}
+	}
+}
+
 // shareAccessPoint returns the access point of a shared directory, creating
 // it when no container used the directory before.
-func (b *MicroVM) shareAccessPoint(ctx context.Context, dir string) (shareAP, error) {
+func (b *sharedDirectories) shareAccessPoint(ctx context.Context, dir string) (shareAP, error) {
 	b.shareMu.Lock()
 	defer b.shareMu.Unlock()
 	if ap, ok := b.shareAPs[dir]; ok {
@@ -115,10 +165,16 @@ func (b *MicroVM) shareAccessPoint(ctx context.Context, dir string) (shareAP, er
 	}
 	if ap.ID == "" {
 		progress.From(ctx).Step("creating the access point of the shared directory %s", dir)
-		sum := sha256.Sum256([]byte(dir))
+		token := dir
+		tags := map[string]string{shareTag: dir}
+		if b.tagFileSystem {
+			token = b.fileSystemID + ":" + dir
+			tags["sandboxxing:filesystem"] = b.fileSystemID
+		}
+		sum := sha256.Sum256([]byte(token))
 		out, err := b.efs.CreateAccessPoint(ctx, &efs.CreateAccessPointInput{
 			ClientToken:  aws.String("sandboxxing-share-" + hex.EncodeToString(sum[:16])),
-			FileSystemId: aws.String(b.cfg.FileSystemID),
+			FileSystemId: aws.String(b.fileSystemID),
 			// No user is enforced, so the files keep their owners as they
 			// would on a bind mount.
 			RootDirectory: &efstypes.RootDirectory{
@@ -127,7 +183,7 @@ func (b *MicroVM) shareAccessPoint(ctx context.Context, dir string) (shareAP, er
 					OwnerUid: aws.Int64(0), OwnerGid: aws.Int64(0), Permissions: aws.String("0755"),
 				},
 			},
-			Tags: efsTags(map[string]string{shareTag: dir}),
+			Tags: efsTags(tags),
 		})
 		var exists *efstypes.AccessPointAlreadyExists
 		switch {
@@ -155,12 +211,12 @@ func (b *MicroVM) shareAccessPoint(ctx context.Context, dir string) (shareAP, er
 
 // findShareAccessPoint looks up the access point of a shared directory by its
 // tag. It returns an empty one when there is none.
-func (b *MicroVM) findShareAccessPoint(ctx context.Context, dir string) (shareAP, error) {
-	pages := efs.NewDescribeAccessPointsPaginator(b.efs, &efs.DescribeAccessPointsInput{FileSystemId: aws.String(b.cfg.FileSystemID)})
+func (b *sharedDirectories) findShareAccessPoint(ctx context.Context, dir string) (shareAP, error) {
+	pages := efs.NewDescribeAccessPointsPaginator(b.efs, &efs.DescribeAccessPointsInput{FileSystemId: aws.String(b.fileSystemID)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return shareAP{}, fmt.Errorf("list the access points of %s: %w", b.cfg.FileSystemID, err)
+			return shareAP{}, fmt.Errorf("list the access points of %s: %w", b.fileSystemID, err)
 		}
 		for _, ap := range page.AccessPoints {
 			switch ap.LifeCycleState {
@@ -177,7 +233,7 @@ func (b *MicroVM) findShareAccessPoint(ctx context.Context, dir string) (shareAP
 	return shareAP{}, nil
 }
 
-func (b *MicroVM) describeShare(ctx context.Context, id string) (shareAP, error) {
+func (b *sharedDirectories) describeShare(ctx context.Context, id string) (shareAP, error) {
 	out, err := b.efs.DescribeAccessPoints(ctx, &efs.DescribeAccessPointsInput{AccessPointId: aws.String(id)})
 	if err != nil {
 		return shareAP{}, fmt.Errorf("describe access point %s: %w", id, err)

@@ -101,11 +101,7 @@ type MicroVM struct {
 	// policies holds the policy last written to each execution role.
 	policies map[string]string
 
-	// shareMu serialises the lookup of the access points of the shared
-	// directories, so that two containers never create one twice.
-	shareMu sync.Mutex
-	// shareAPs caches the access points of the shared directories by path.
-	shareAPs map[string]shareAP
+	shared *sharedDirectories
 }
 
 type authToken struct {
@@ -153,6 +149,7 @@ func NewMicroVMWith(ctx context.Context, cfg *config.MicroVMConfig, log *slog.Lo
 	return &MicroVM{
 		cfg: cfg, log: log, state: st, region: c.Region,
 		vms: c.VMs, efs: c.EFS, iam: c.IAM,
+		shared:        newSharedDirectories(c.EFS, cfg.FileSystemID, c.Poll, false),
 		ctx:           ctx,
 		poll:          c.Poll,
 		home:          c.Home,
@@ -225,7 +222,7 @@ func (b *MicroVM) Provision(ctx context.Context, vm *state.VM) error {
 		}); err != nil {
 			return err
 		}
-		if err := b.waitAccessPoint(ctx, aws.ToString(out.AccessPointId)); err != nil {
+		if err := b.shared.waitAccessPoint(ctx, aws.ToString(out.AccessPointId)); err != nil {
 			return err
 		}
 		mv, _ = b.state.MicroVMOf(vm.Name)
@@ -257,31 +254,6 @@ func (b *MicroVM) Provision(ctx context.Context, vm *state.VM) error {
 	// has propagated by the time the first MicroVM mounts them.
 	_, err := b.grant(ctx, vm, mv)
 	return err
-}
-
-// waitAccessPoint waits until a new access point can be mounted.
-func (b *MicroVM) waitAccessPoint(ctx context.Context, id string) error {
-	deadline := time.Now().Add(time.Minute)
-	for {
-		out, err := b.efs.DescribeAccessPoints(ctx, &efs.DescribeAccessPointsInput{AccessPointId: aws.String(id)})
-		if err != nil {
-			return fmt.Errorf("describe access point %s: %w", id, err)
-		}
-		if len(out.AccessPoints) == 1 {
-			switch out.AccessPoints[0].LifeCycleState {
-			case efstypes.LifeCycleStateAvailable:
-				return nil
-			case efstypes.LifeCycleStateError, efstypes.LifeCycleStateDeleting, efstypes.LifeCycleStateDeleted:
-				return fmt.Errorf("access point %s is %s", id, out.AccessPoints[0].LifeCycleState)
-			}
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("access point %s did not become available", id)
-		}
-		if err := sleep(ctx, b.poll); err != nil {
-			return err
-		}
-	}
 }
 
 // trustPolicy lets Lambda assume an execution role.
