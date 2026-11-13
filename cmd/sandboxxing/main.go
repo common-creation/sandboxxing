@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -135,11 +136,19 @@ before an uninstall. Stop the service first.
 
 	vms := vm.New(cfg, log, st)
 	if cfg.MicroVM != nil {
-		awsCfg, err := loadAWS(ctx, cfg)
+		awsCfg, err := loadAWS(ctx, cfg.MicroVM.Region)
 		if err != nil {
 			return err
 		}
 		vms.EnableMicroVM(backend.NewMicroVM(ctx, cfg.MicroVM, log, st, awsCfg))
+	}
+
+	if cfg.EC2 != nil {
+		awsCfg, err := loadAWS(ctx, cfg.EC2.Region)
+		if err != nil {
+			return err
+		}
+		vms.EnableEC2(backend.NewEC2(ctx, cfg.EC2, log, st, awsCfg))
 	}
 
 	runner := cli.New(cfg, log, vms, st, advertisedHost(cfg))
@@ -211,17 +220,27 @@ func runChecks(cfg *config.Config, log *slog.Logger, st *state.State) error {
 		return fmt.Errorf("%d authentication check(s) failed", failed)
 	}
 
+	var cloudChecks []hostCheck
 	if cfg.MicroVM != nil {
-		c := microvmCheck(ctx, cfg)
+		cloudChecks = append(cloudChecks, awsCheck(ctx, "microvm", cfg.MicroVM.Region))
+	}
+	if cfg.EC2 != nil {
+		cloudChecks = append(cloudChecks, awsCheck(ctx, "ec2", cfg.EC2.Region))
+		for _, tool := range []string{"aws", "session-manager-plugin"} {
+			path, err := exec.LookPath(tool)
+			if err != nil {
+				path = err.Error()
+			}
+			cloudChecks = append(cloudChecks, hostCheck{Name: tool, OK: err == nil, Detail: path})
+		}
+	}
+	for _, c := range cloudChecks {
 		result := "ok"
 		if !c.OK {
 			result = "FAIL"
 			failed++
 		}
 		fmt.Printf("%-6s %-18s %s\n", result, c.Name, c.Detail)
-		if failed > 0 {
-			return errors.New("the AWS credentials of the microvm backend are not usable")
-		}
 	}
 
 	for _, c := range vms.HostCheck(ctx) {
@@ -406,29 +425,29 @@ func newLogger(level string) *slog.Logger {
 // loadAWS loads the AWS configuration of the microvm backend from the usual
 // sources: the environment, the shared configuration files and the instance
 // role.
-func loadAWS(ctx context.Context, cfg *config.Config) (aws.Config, error) {
+func loadAWS(ctx context.Context, region string) (aws.Config, error) {
 	var opts []func(*awsconfig.LoadOptions) error
-	if cfg.MicroVM.Region != "" {
-		opts = append(opts, awsconfig.WithRegion(cfg.MicroVM.Region))
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
 	}
 	if awsCfg.Region == "" {
-		return aws.Config{}, errors.New("no AWS region is configured: set microvm.region")
+		return aws.Config{}, errors.New("no AWS region is configured: set the backend region or AWS_REGION")
 	}
 	return awsCfg, nil
 }
 
 // microvmCheck verifies that the daemon has AWS credentials.
-func microvmCheck(ctx context.Context, cfg *config.Config) hostCheck {
-	awsCfg, err := loadAWS(ctx, cfg)
+func awsCheck(ctx context.Context, backendName, region string) hostCheck {
+	awsCfg, err := loadAWS(ctx, region)
 	if err != nil {
-		return hostCheck{Name: "aws credentials", Detail: err.Error()}
+		return hostCheck{Name: backendName + " credentials", Detail: err.Error()}
 	}
 	if _, err := awsCfg.Credentials.Retrieve(ctx); err != nil {
-		return hostCheck{Name: "aws credentials", Detail: err.Error()}
+		return hostCheck{Name: backendName + " credentials", Detail: err.Error()}
 	}
-	return hostCheck{Name: "aws credentials", OK: true, Detail: "region " + awsCfg.Region}
+	return hostCheck{Name: backendName + " credentials", OK: true, Detail: "region " + awsCfg.Region}
 }

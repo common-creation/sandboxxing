@@ -56,6 +56,7 @@ type VM struct {
 	// MicroVM holds the AWS resources of a container run by the microvm
 	// backend.
 	MicroVM *MicroVM `json:"microvm,omitempty"`
+	EC2     *EC2     `json:"ec2,omitempty"`
 	// AutoStop is how long a container run by the microvm backend keeps
 	// running without an SSH connection. Nil uses DefaultAutoStop and zero
 	// keeps it running. It is read with AutoStopOf.
@@ -106,6 +107,7 @@ type MicroVM struct {
 
 // The backends that can run a container.
 const (
+	BackendEC2     = "ec2"
 	BackendNspawn  = "nspawn"
 	BackendMicroVM = "microvm"
 )
@@ -265,7 +267,7 @@ func (s *State) Get(name string) (*VM, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	vm, ok := s.VMs[name]
-	return vm, ok
+	return ec2Snapshot(vm), ok
 }
 
 // List returns all VMs sorted by name.
@@ -274,7 +276,7 @@ func (s *State) List() []*VM {
 	defer s.mu.Unlock()
 	out := make([]*VM, 0, len(s.VMs))
 	for _, vm := range s.VMs {
-		out = append(out, vm)
+		out = append(out, ec2Snapshot(vm))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

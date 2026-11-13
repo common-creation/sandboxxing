@@ -127,6 +127,7 @@ func (m *Manager) migrate(name string) {
 // Reconcile brings the recorded MicroVMs up to date after a start of the
 // daemon.
 func (m *Manager) Reconcile(ctx context.Context) {
+	m.resumeEC2Resizes(ctx)
 	if m.microvm != nil {
 		m.microvm.Reconcile(ctx)
 	}

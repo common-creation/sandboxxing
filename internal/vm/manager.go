@@ -42,6 +42,7 @@ type Manager struct {
 	// microvm runs containers as AWS Lambda MicroVMs. It is nil unless
 	// configured.
 	microvm *backend.MicroVM
+	ec2     ec2Backend
 	host    *host.Manager
 
 	// mu guards the fields below, which coordinate offline operations on
@@ -109,7 +110,8 @@ type Options struct {
 	Nested bool
 	// Backend selects the backend that runs the container. Empty uses the
 	// configured default.
-	Backend string
+	Backend      string
+	InstanceType string
 	// AutoStop is how long a MicroVM keeps running without an SSH
 	// connection. Nil uses state.DefaultAutoStop and zero keeps it running.
 	AutoStop *time.Duration
@@ -127,12 +129,17 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 	if opts.Backend == "" {
 		opts.Backend = m.cfg.DefaultBackend
 	}
+	if opts.InstanceType != "" && opts.Backend != state.BackendEC2 {
+		return nil, errors.New("--instance-type requires the ec2 backend")
+	}
 	switch opts.Backend {
+	case state.BackendEC2:
+		return m.createEC2(ctx, opts)
 	case state.BackendMicroVM:
 		return m.createMicroVM(ctx, opts)
 	case state.BackendNspawn, "":
 	default:
-		return nil, fmt.Errorf("unknown backend %q: use %s or %s", opts.Backend, state.BackendNspawn, state.BackendMicroVM)
+		return nil, fmt.Errorf("unknown backend %q: use %s, %s or %s", opts.Backend, state.BackendNspawn, state.BackendMicroVM, state.BackendEC2)
 	}
 	if opts.AutoStop != nil {
 		if err := checkAutoStop(state.BackendNspawn, *opts.AutoStop); err != nil {
@@ -318,6 +325,11 @@ func (m *Manager) reserveName(name string) (string, error) {
 
 // Remove stops and deletes a container together with its disk image.
 func (m *Manager) Remove(ctx context.Context, name string) error {
+	return m.RemoveForce(ctx, name, false)
+}
+
+// RemoveForce skips the guest shutdown when deleting an EC2 sandbox with --force.
+func (m *Manager) RemoveForce(ctx context.Context, name string, force bool) error {
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
@@ -326,7 +338,22 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if r, ok := b.(remover); ok {
+	if vm.BackendName() == state.BackendEC2 {
+		done, err := m.beginMaintenance(ctx, name, "removed")
+		if err != nil {
+			return err
+		}
+		defer done()
+		vm, err = m.currentEC2(vm)
+		if err != nil {
+			return err
+		}
+		if err := m.ec2.RemoveForce(ctx, vm, force); err != nil {
+			return err
+		}
+	} else if force {
+		return errors.New("--force requires the ec2 backend")
+	} else if r, ok := b.(remover); ok {
 		err = r.Remove(ctx, vm)
 	} else {
 		err = b.Stop(ctx, vm)
@@ -352,6 +379,25 @@ func (m *Manager) Restart(ctx context.Context, name string) error {
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
+	}
+	if vm.BackendName() == state.BackendEC2 {
+		if _, err := m.backendFor(vm); err != nil {
+			return err
+		}
+		done, err := m.beginMaintenance(ctx, name, "restarted")
+		if err != nil {
+			return err
+		}
+		defer done()
+		vm, err = m.currentEC2(vm)
+		if err != nil {
+			return err
+		}
+		if err := m.ec2.Restart(ctx, vm); err != nil {
+			return err
+		}
+		m.resetIdle(name)
+		return nil
 	}
 	l := m.startLock(name)
 	l.Lock()
@@ -387,6 +433,14 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 // otherwise start it again with their next port forward. It stays stopped
 // until it is started or logged into again.
 func (m *Manager) Stop(ctx context.Context, name string) error {
+	return m.StopForce(ctx, name, false)
+}
+
+// StopForce skips the guest shutdown when stopping an EC2 sandbox with --force.
+func (m *Manager) StopForce(ctx context.Context, name string, force bool) error {
+	l := m.startLock(name)
+	l.Lock()
+	defer l.Unlock()
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
@@ -395,9 +449,9 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	l := m.startLock(name)
-	l.Lock()
-	defer l.Unlock()
+	if force && vm.BackendName() != state.BackendEC2 {
+		return errors.New("--force requires the ec2 backend")
+	}
 	if err := m.checkIdle(name); err != nil {
 		return err
 	}
@@ -409,6 +463,9 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 			progress.From(ctx).Step("closed %d SSH connection(s) to %s", n, name)
 		}
 	}
+	if force {
+		return m.ec2.StopForce(ctx, vm, true)
+	}
 	if err := b.Stop(ctx, vm); err != nil {
 		return err
 	}
@@ -419,9 +476,20 @@ func (m *Manager) Stop(ctx context.Context, name string) error {
 // Resize changes the CPU, memory or disk allowance. The disk can only grow;
 // growth is applied offline with resize2fs.
 func (m *Manager) Resize(ctx context.Context, name string, cpu int, memory, disk int64) error {
+	return m.ResizeResources(ctx, name, cpu, memory, disk, "")
+}
+
+// ResizeResources applies the size controls supported by the selected backend.
+func (m *Manager) ResizeResources(ctx context.Context, name string, cpu int, memory, disk int64, instanceType string) error {
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
+	}
+	if vm.BackendName() == state.BackendEC2 {
+		return m.resizeEC2(ctx, vm, cpu, memory, disk, instanceType)
+	}
+	if instanceType != "" {
+		return errors.New("--instance-type requires the ec2 backend")
 	}
 	if err := requireNspawn(vm, "resizing"); err != nil {
 		return err
@@ -552,19 +620,19 @@ func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 // EnsureStarted boots a stopped container. This is what makes direct SSH
 // access work even after the host rebooted.
 func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
+	l := m.startLock(name)
+	l.Lock()
+	defer l.Unlock()
 	vm, ok := m.state.Get(name)
 	if !ok {
 		return fmt.Errorf("container %q not found", name)
 	}
-	l := m.startLock(name)
-	l.Lock()
-	defer l.Unlock()
 	if err := m.checkIdle(name); err != nil {
 		return err
 	}
 	// A container created by an older release is updated even while it is
 	// running, so that the fix reaches it without an explicit restart.
-	if vm.NetConfig < state.NetConfigVersion {
+	if vm.BackendName() == state.BackendNspawn && vm.NetConfig < state.NetConfigVersion {
 		if err := m.refreshNetConfig(ctx, vm); err != nil {
 			return err
 		}
@@ -576,7 +644,7 @@ func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if b.Running(ctx, vm) {
+	if (vm.EC2 == nil || (vm.EC2.Ready && vm.EC2.PendingResize == nil)) && b.Running(ctx, vm) {
 		return nil
 	}
 	m.log.Info("starting container on demand", "name", name)
@@ -595,7 +663,7 @@ func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
 func (m *Manager) MigrateNetwork(ctx context.Context) error {
 	var pending []*state.VM
 	for _, vm := range m.state.List() {
-		if vm.IP != "" && vm.NetConfig < state.NetConfigVersion {
+		if vm.BackendName() == state.BackendNspawn && vm.IP != "" && vm.NetConfig < state.NetConfigVersion {
 			pending = append(pending, vm)
 		}
 	}

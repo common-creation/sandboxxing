@@ -154,7 +154,7 @@ func (r *Runner) Shell(ctx context.Context, sess *IO) int {
 }
 
 func (r *Runner) printHelp(sess *IO) int {
-	fmt.Fprint(sess.Out, `sandboxxing - manage systemd-nspawn sandboxes over SSH
+	fmt.Fprint(sess.Out, `sandboxxing - manage sandboxes over SSH
 
 Usage:
   ssh `+r.host+` <command> [options] [arguments]
@@ -165,28 +165,28 @@ Commands:
         list containers
   new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
       [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-      [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+      [--nested] [--backend=nspawn|microvm|ec2] [--instance-type=TYPE] [--autostop=30m]
       [--setup-script=FILE] [--json]
         create and boot a container (--share mounts a host directory, or
-        a directory of the EFS file system for a MicroVM,
+        a directory of the backend-specific EFS file system for MicroVM or EC2,
         --nested allows Docker inside the container, --backend=microvm
-        runs it as an AWS Lambda MicroVM, --autostop stops the MicroVM
+        runs it as an AWS Lambda MicroVM, --autostop stops cloud sandboxes
         after that long without an SSH connection, 0 never)
-  rm <name>... [--json]
+  rm <name>... [--force] [--json]
         remove containers
   start <name>... [--json]
         boot stopped containers
-  stop <name>... [--json]
+  stop <name>... [--force] [--json]
         power containers off and close their SSH connections (the next
-        login starts them again)
+        login starts them again); --force skips EC2 OS shutdown
   restart <name> [--json]
         reboot a container
   cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nested] [--json]
         copy a container
-  resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--json]
+  resize <name> [--instance-type=TYPE] [--cpu=N] [--memory=4G] [--disk=20G] [--json]
         change the resource limits (disk can only grow)
   edit <name> --autostop=DURATION [--json]
-        change the autostop time of a MicroVM (0 never stops it)
+        change the autostop time of a MicroVM or EC2 instance (0 never stops it)
   stat <name> [--range=24h|7d|30d] [--json]
         show container details and live resource usage
   ssh [-l user] [user@]name [command...]
@@ -299,6 +299,19 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 		// The size of a MicroVM is set by its image.
 		fmt.Fprintf(sess.Out, "microvm:   %s\n", orNone(mv.ID))
 		fmt.Fprintf(sess.Out, "migrated:  %d time(s)\n", max(mv.Generation-1, 0))
+		if mv.ID != "" && r.cfg.MicroVM != nil {
+			left := time.Until(mv.StartedAt.Add(r.cfg.MicroVM.MaximumDuration.Duration()))
+			fmt.Fprintf(sess.Out, "replaced:  in %s\n", humanDuration(max(left, 0)))
+		}
+	} else if ec := info.VM.EC2; ec != nil {
+		fmt.Fprintf(sess.Out, "instance-type: %s\n", ec.InstanceType)
+		fmt.Fprintf(sess.Out, "disk:      %s\n", config.DiskSize(info.VM.Disk))
+	} else {
+		fmt.Fprintf(sess.Out, "cpu:       %d\n", info.VM.CPU)
+		fmt.Fprintf(sess.Out, "memory:    %s\n", config.DiskSize(info.VM.Memory).String())
+		fmt.Fprintf(sess.Out, "disk:      %s\n", config.DiskSize(info.VM.Disk).String())
+	}
+	if info.VM.BackendName() == state.BackendEC2 || info.VM.BackendName() == state.BackendMicroVM {
 		if after, ok := r.st.AutoStopOf(info.VM.Name); ok {
 			if after > 0 {
 				fmt.Fprintf(sess.Out, "autostop:  after %s without SSH connections\n", autoStopText(after))
@@ -306,14 +319,6 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 				fmt.Fprintf(sess.Out, "autostop:  never\n")
 			}
 		}
-		if mv.ID != "" && r.cfg.MicroVM != nil {
-			left := time.Until(mv.StartedAt.Add(r.cfg.MicroVM.MaximumDuration.Duration()))
-			fmt.Fprintf(sess.Out, "replaced:  in %s\n", humanDuration(max(left, 0)))
-		}
-	} else {
-		fmt.Fprintf(sess.Out, "cpu:       %d\n", info.VM.CPU)
-		fmt.Fprintf(sess.Out, "memory:    %s\n", config.DiskSize(info.VM.Memory).String())
-		fmt.Fprintf(sess.Out, "disk:      %s\n", config.DiskSize(info.VM.Disk).String())
 	}
 	fmt.Fprintf(sess.Out, "created:   %s\n", info.VM.Created.Local().Format(time.RFC3339))
 	fmt.Fprintf(sess.Out, "comment:   %s\n", info.VM.Comment)
@@ -330,7 +335,7 @@ func (r *Runner) printDetail(sess *IO, info vm.Info) {
 		}
 		fmt.Fprintf(sess.Out, "shares:    %s\n", strings.Join(rendered, ", "))
 	}
-	if r.cfg.Nested || info.VM.Nested {
+	if info.VM.BackendName() == state.BackendNspawn && (r.cfg.Nested || info.VM.Nested) {
 		fmt.Fprintf(sess.Out, "nested:    true\n")
 	}
 	if info.Running {
@@ -368,7 +373,9 @@ func (r *Runner) cmdStat(ctx context.Context, args []string, sess *IO) int {
 	}
 	r.printDetail(sess, info)
 	if info.Running && info.Metrics != nil {
-		fmt.Fprintf(sess.Out, "cpu quota: %d%%\n", info.VM.CPU*100)
+		if info.VM.BackendName() == state.BackendNspawn {
+			fmt.Fprintf(sess.Out, "cpu quota: %d%%\n", info.VM.CPU*100)
+		}
 		fmt.Fprintf(sess.Out, "mem max:   %s\n", config.DiskSize(info.Metrics.MemoryLimit).String())
 		fmt.Fprintf(sess.Out, "mem swap:  %s\n", config.DiskSize(info.Metrics.MemorySwap).String())
 	}
@@ -464,7 +471,11 @@ func (r *Runner) cmdBilling(args []string, sess *IO) int {
 	if opts.bool("json") {
 		return r.writeJSON(sess, plan)
 	}
-	fmt.Fprintf(sess.Out, "sandboxxing runs locally on one host; there is no billing.\n\n")
+	if r.cfg.EC2 != nil || r.cfg.MicroVM != nil {
+		fmt.Fprint(sess.Out, "Local host capacity. AWS charges for cloud sandboxes are billed to the configured AWS account.\n\n")
+	} else {
+		fmt.Fprint(sess.Out, "sandboxxing runs locally on one host; there is no billing.\n\n")
+	}
 	fmt.Fprintf(sess.Out, "cpus:            %d\n", plan.CPUs)
 	fmt.Fprintf(sess.Out, "memory:          %s total, %s available\n",
 		config.DiskSize(plan.MemoryTotal).String(), config.DiskSize(plan.MemoryAvailable).String())
@@ -516,6 +527,12 @@ func (r *Runner) cmdHostCheck(ctx context.Context, args []string, sess *IO) int 
 // container entry replacing a global one that targets the same path.
 func (r *Runner) effectiveShares(vm *state.VM) []config.Share {
 	host := r.cfg.Shares
+	if vm.BackendName() == state.BackendEC2 {
+		host = nil
+		if r.cfg.EC2 != nil {
+			host = r.cfg.EC2.Shares
+		}
+	}
 	if vm.BackendName() == state.BackendMicroVM {
 		host = nil
 		if r.cfg.MicroVM != nil {
@@ -530,7 +547,7 @@ func (r *Runner) vmSSH(vm *state.VM) string {
 }
 
 func (r *Runner) writeJSON(sess *IO, v any) int {
-	v = withoutSecrets(v)
+	v = r.publicRecords(v)
 	enc := json.NewEncoder(sess.Out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
@@ -539,11 +556,18 @@ func (r *Runner) writeJSON(sess *IO, v any) int {
 	return 0
 }
 
-// withoutSecrets returns container records without the secret that
-// authenticates the daemon at a MicroVM. The record is shared with the state,
-// so it is copied rather than changed.
-func withoutSecrets(v any) any {
+// publicRecords prepares cloud sandbox metadata for output without disclosing
+// agent credentials or changing the stored configuration.
+func (r *Runner) publicRecords(v any) any {
 	scrub := func(vm *state.VM) *state.VM {
+		if vm != nil && vm.EC2 != nil {
+			c, ec := *vm, *vm.EC2
+			ec.Secret = ""
+			ec.ClientToken = ""
+			c.EC2 = &ec
+			c.Shares = r.effectiveShares(vm)
+			return &c
+		}
 		if vm == nil || vm.MicroVM == nil {
 			return vm
 		}

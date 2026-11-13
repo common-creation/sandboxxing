@@ -42,7 +42,7 @@ func (m *Manager) activityLocked(name string) *activity {
 }
 
 // Connected records an SSH connection to a container and returns the
-// function that records its end. A container run by the microvm backend is
+// function that records its end. A cloud sandbox is
 // stopped once it had no connection for its autostop time, and every
 // connection starts that time anew.
 func (m *Manager) Connected(name string) func() {
@@ -106,8 +106,8 @@ func (m *Manager) SetAutoStop(name string, d time.Duration) error {
 
 // checkAutoStop validates an autostop time for a container of the backend.
 func checkAutoStop(backendName string, d time.Duration) error {
-	if backendName != state.BackendMicroVM {
-		return fmt.Errorf("autostop is only available for the %s backend", state.BackendMicroVM)
+	if backendName != state.BackendMicroVM && backendName != state.BackendEC2 {
+		return fmt.Errorf("autostop is only available for the %s and %s backends", state.BackendMicroVM, state.BackendEC2)
 	}
 	if d != 0 && d < MinAutoStop {
 		return fmt.Errorf("autostop must be 0 (never) or at least %s", MinAutoStop)
@@ -115,11 +115,11 @@ func checkAutoStop(backendName string, d time.Duration) error {
 	return nil
 }
 
-// AutoStop stops the containers of the microvm backend that had no SSH
+// AutoStop stops the cloud sandboxes that had no SSH
 // connection for their autostop time, until ctx ends. The next login starts
 // them again.
 func (m *Manager) AutoStop(ctx context.Context) {
-	if m.microvm == nil {
+	if m.microvm == nil && m.ec2 == nil {
 		return
 	}
 	t := time.NewTicker(autoStopInterval)
@@ -134,13 +134,19 @@ func (m *Manager) AutoStop(ctx context.Context) {
 	}
 }
 
-// stopIdle stops the running MicroVMs that are idle at now.
+// stopIdle stops the running cloud sandboxes that are idle at now.
 func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 	for _, vm := range m.state.List() {
-		if vm.BackendName() != state.BackendMicroVM {
-			continue
-		}
-		if mv, ok := m.state.MicroVMOf(vm.Name); !ok || mv.ID == "" {
+		switch vm.BackendName() {
+		case state.BackendMicroVM:
+			if mv, ok := m.state.MicroVMOf(vm.Name); m.microvm == nil || !ok || mv.ID == "" {
+				continue
+			}
+		case state.BackendEC2:
+			if m.ec2 == nil || vm.EC2 == nil || vm.EC2.InstanceID == "" || vm.EC2.PendingResize != nil {
+				continue
+			}
+		default:
 			continue
 		}
 		after, ok := m.state.AutoStopOf(vm.Name)
@@ -170,6 +176,12 @@ func (m *Manager) stopIfIdle(ctx context.Context, name string, now time.Time) er
 	if !ok {
 		return nil
 	}
+	if vm.BackendName() != state.BackendMicroVM && vm.BackendName() != state.BackendEC2 {
+		return nil
+	}
+	if vm.EC2 != nil && vm.EC2.PendingResize != nil {
+		return nil
+	}
 	after, ok := m.state.AutoStopOf(name)
 	if !ok {
 		return nil
@@ -184,5 +196,12 @@ func (m *Manager) stopIfIdle(ctx context.Context, name string, now time.Time) er
 		return nil
 	}
 	m.log.Info("stopping a container without SSH connections", "name", name, "autostop", after)
-	return m.microvm.Stop(ctx, vm)
+	b, err := m.backendFor(vm)
+	if err != nil {
+		return err
+	}
+	if vm.BackendName() == state.BackendEC2 && !b.Running(ctx, vm) {
+		return nil
+	}
+	return b.Stop(ctx, vm)
 }

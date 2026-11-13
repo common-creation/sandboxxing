@@ -122,6 +122,7 @@ type Config struct {
 	// MicroVM enables the backend that runs containers as AWS Lambda
 	// MicroVMs. Nil disables it.
 	MicroVM *MicroVMConfig `json:"microvm"`
+	EC2     *EC2Config     `json:"ec2,omitempty"`
 
 	// Path is the file the configuration was loaded from.
 	Path string `json:"-"`
@@ -359,16 +360,28 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if c.EC2 != nil {
+		if err := c.EC2.validate(); err != nil {
+			return err
+		}
+		if c.MicroVM != nil && c.MicroVM.FileSystemID == c.EC2.FileSystemID {
+			return errors.New("ec2 must have its own EFS file system")
+		}
+	}
 	switch c.DefaultBackend {
 	case "":
 		c.DefaultBackend = "nspawn"
 	case "nspawn":
+	case "ec2":
+		if c.EC2 == nil {
+			return errors.New(`default_backend is "ec2" but the ec2 section is missing`)
+		}
 	case "microvm":
 		if c.MicroVM == nil {
 			return errors.New(`default_backend is "microvm" but the microvm section is missing`)
 		}
 	default:
-		return fmt.Errorf("invalid default_backend %q: use nspawn or microvm", c.DefaultBackend)
+		return fmt.Errorf("invalid default_backend %q: use nspawn, microvm or ec2", c.DefaultBackend)
 	}
 	return nil
 }

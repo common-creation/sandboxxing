@@ -30,8 +30,9 @@ func main() {
 func run() error {
 	fs := flag.NewFlagSet("sandboxxing-agent", flag.ContinueOnError)
 	var (
-		dataAddr = fs.String("data-addr", ":"+strconv.Itoa(agent.DataPort), "listen address for the daemon")
-		hookAddr = fs.String("hook-addr", ":"+strconv.Itoa(agent.HookPort), "listen address for the lifecycle hooks")
+		dataAddr  = fs.String("data-addr", ":"+strconv.Itoa(agent.DataPort), "listen address for the daemon")
+		hookAddr  = fs.String("hook-addr", ":"+strconv.Itoa(agent.HookPort), "listen address for the lifecycle hooks")
+		ec2Config = fs.String("ec2-config", "", "serve the EC2 data protocol on loopback with this configuration")
 	)
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -43,9 +44,17 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	servers := []*http.Server{
-		{Addr: *hookAddr, Handler: srv.HookHandler(), ReadHeaderTimeout: 10 * time.Second},
-		{Addr: *dataAddr, Handler: srv.DataHandler(), ReadHeaderTimeout: 10 * time.Second},
+	var servers []*http.Server
+	if *ec2Config != "" {
+		handler, err := srv.EC2Handler(ctx, *ec2Config, "/run/sandboxxing-agent-mounts.json")
+		if err != nil {
+			return err
+		}
+		servers = append(servers, &http.Server{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(agent.DataPort)), Handler: handler, ReadHeaderTimeout: 10 * time.Second})
+	} else {
+		servers = append(servers,
+			&http.Server{Addr: *hookAddr, Handler: srv.HookHandler(), ReadHeaderTimeout: 10 * time.Second},
+			&http.Server{Addr: *dataAddr, Handler: srv.DataHandler(), ReadHeaderTimeout: 10 * time.Second})
 	}
 	errs := make(chan error, len(servers))
 	for _, s := range servers {

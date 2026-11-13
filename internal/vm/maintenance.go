@@ -63,6 +63,11 @@ func (m *Manager) checkIdle(name string) error {
 // mounted while the image is worked on. The returned function ends the
 // operation.
 func (m *Manager) beginMaintenance(ctx context.Context, name, op string) (func(), error) {
+	return m.beginOperation(ctx, name, op, true)
+}
+
+// beginOperation excludes other lifecycle operations, optionally closing active SSH sessions.
+func (m *Manager) beginOperation(ctx context.Context, name, op string, closeConnections bool) (func(), error) {
 	l := m.startLock(name)
 	l.Lock()
 	m.mu.Lock()
@@ -79,7 +84,7 @@ func (m *Manager) beginMaintenance(ctx context.Context, name, op string) (func()
 	m.mu.Unlock()
 	l.Unlock()
 
-	if disconnect != nil {
+	if closeConnections && disconnect != nil {
 		if n := disconnect(name); n > 0 {
 			progress.From(ctx).Step("closed %d SSH connection(s) to %s", n, name)
 			m.log.Info("closed the SSH connections of a container", "name", name, "connections", n, "reason", op)

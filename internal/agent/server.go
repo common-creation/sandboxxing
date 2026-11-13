@@ -281,6 +281,10 @@ func (s *Server) track(pgid int, running bool) {
 
 // DataHandler serves the daemon.
 func (s *Server) DataHandler() http.Handler {
+	return s.authenticate(s.dataRoutes())
+}
+
+func (s *Server) dataRoutes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+PathPing, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok\n")
@@ -288,7 +292,7 @@ func (s *Server) DataHandler() http.Handler {
 	mux.HandleFunc("GET "+PathExec, s.serveExec)
 	mux.HandleFunc("GET "+PathDial, s.serveDial)
 	mux.HandleFunc("GET "+PathEvents, s.serveEvents)
-	return s.authenticate(mux)
+	return mux
 }
 
 // authenticate admits the requests that present the secret of the instance.

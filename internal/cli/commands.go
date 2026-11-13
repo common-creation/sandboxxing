@@ -16,22 +16,23 @@ import (
 
 func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 	opts, err := parseFlags(args, map[string]flagSpec{
-		"name":         {kind: flagString},
-		"image":        {kind: flagString},
-		"cpu":          {kind: flagString},
-		"memory":       {kind: flagString},
-		"disk":         {kind: flagString},
-		"comment":      {kind: flagString},
-		"tag":          {kind: flagString, repeatable: true, commaList: true},
-		"env":          {kind: flagString, repeatable: true},
-		"share":        {kind: flagString, repeatable: true},
-		"setup-script": {kind: flagString},
-		"json":         {kind: flagBool},
-		"no-start":     {kind: flagBool},
-		"prompt":       {kind: flagString},
-		"nested":       {kind: flagBool},
-		"backend":      {kind: flagString},
-		"autostop":     {kind: flagString},
+		"name":          {kind: flagString},
+		"image":         {kind: flagString},
+		"cpu":           {kind: flagString},
+		"memory":        {kind: flagString},
+		"disk":          {kind: flagString},
+		"comment":       {kind: flagString},
+		"tag":           {kind: flagString, repeatable: true, commaList: true},
+		"env":           {kind: flagString, repeatable: true},
+		"share":         {kind: flagString, repeatable: true},
+		"setup-script":  {kind: flagString},
+		"json":          {kind: flagBool},
+		"no-start":      {kind: flagBool},
+		"prompt":        {kind: flagString},
+		"nested":        {kind: flagBool},
+		"backend":       {kind: flagString},
+		"instance-type": {kind: flagString},
+		"autostop":      {kind: flagString},
 	})
 	if err != nil {
 		return r.fail(sess, err)
@@ -41,12 +42,13 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 	}
 
 	create := vm.Options{
-		Name:    opts.str("name"),
-		Image:   opts.str("image"),
-		Comment: opts.str("comment"),
-		Tags:    opts.strs("tag"),
-		Nested:  opts.bool("nested"),
-		Backend: opts.str("backend"),
+		Name:         opts.str("name"),
+		Image:        opts.str("image"),
+		Comment:      opts.str("comment"),
+		Tags:         opts.strs("tag"),
+		Nested:       opts.bool("nested"),
+		Backend:      opts.str("backend"),
+		InstanceType: opts.str("instance-type"),
 	}
 	if create.CPU, err = r.parseCPU(opts.str("cpu")); err != nil {
 		return r.fail(sess, err)
@@ -112,7 +114,7 @@ func (r *Runner) cmdNew(ctx context.Context, args []string, sess *IO) int {
 }
 
 func (r *Runner) cmdRemove(ctx context.Context, args []string, sess *IO) int {
-	opts, err := parseFlags(args, map[string]flagSpec{"json": {kind: flagBool}})
+	opts, err := parseFlags(args, map[string]flagSpec{"json": {kind: flagBool}, "force": {kind: flagBool}})
 	if err != nil {
 		return r.fail(sess, err)
 	}
@@ -122,7 +124,7 @@ func (r *Runner) cmdRemove(ctx context.Context, args []string, sess *IO) int {
 	removed := make([]string, 0, len(opts.positional))
 	for _, name := range opts.positional {
 		progress.From(ctx).Step("removing container %s", name)
-		if err := r.vms.Remove(ctx, name); err != nil {
+		if err := r.vms.RemoveForce(ctx, name, opts.bool("force")); err != nil {
 			return r.fail(sess, err)
 		}
 		removed = append(removed, name)
@@ -135,23 +137,27 @@ func (r *Runner) cmdRemove(ctx context.Context, args []string, sess *IO) int {
 }
 
 func (r *Runner) cmdStart(ctx context.Context, args []string, sess *IO) int {
-	return r.eachContainer(ctx, args, sess, "start", "started", func(name string) error {
+	return r.eachContainer(ctx, args, sess, "start", "started", func(name string, _ bool) error {
 		progress.From(ctx).Step("starting container %s", name)
 		return r.vms.Start(ctx, name)
 	})
 }
 
 func (r *Runner) cmdStop(ctx context.Context, args []string, sess *IO) int {
-	return r.eachContainer(ctx, args, sess, "stop", "stopped", func(name string) error {
+	return r.eachContainer(ctx, args, sess, "stop", "stopped", func(name string, force bool) error {
 		progress.From(ctx).Step("stopping container %s", name)
-		return r.vms.Stop(ctx, name)
+		return r.vms.StopForce(ctx, name, force)
 	})
 }
 
 // eachContainer runs op on every named container, stopping at the first
 // failure, and reports the ones it handled.
-func (r *Runner) eachContainer(ctx context.Context, args []string, sess *IO, command, done string, op func(name string) error) int {
-	opts, err := parseFlags(args, map[string]flagSpec{"json": {kind: flagBool}})
+func (r *Runner) eachContainer(ctx context.Context, args []string, sess *IO, command, done string, op func(name string, force bool) error) int {
+	flags := map[string]flagSpec{"json": {kind: flagBool}}
+	if command == "stop" {
+		flags["force"] = flagSpec{kind: flagBool}
+	}
+	opts, err := parseFlags(args, flags)
 	if err != nil {
 		return r.fail(sess, err)
 	}
@@ -160,7 +166,7 @@ func (r *Runner) eachContainer(ctx context.Context, args []string, sess *IO, com
 	}
 	handled := make([]string, 0, len(opts.positional))
 	for _, name := range opts.positional {
-		if err := op(name); err != nil {
+		if err := op(name, opts.bool("force")); err != nil {
 			return r.fail(sess, err)
 		}
 		handled = append(handled, name)
@@ -250,16 +256,17 @@ func (r *Runner) cmdCopy(ctx context.Context, args []string, sess *IO) int {
 
 func (r *Runner) cmdResize(ctx context.Context, args []string, sess *IO) int {
 	opts, err := parseFlags(args, map[string]flagSpec{
-		"cpu":    {kind: flagString},
-		"memory": {kind: flagString},
-		"disk":   {kind: flagString},
-		"json":   {kind: flagBool},
+		"instance-type": {kind: flagString},
+		"cpu":           {kind: flagString},
+		"memory":        {kind: flagString},
+		"disk":          {kind: flagString},
+		"json":          {kind: flagBool},
 	})
 	if err != nil {
 		return r.fail(sess, err)
 	}
 	if len(opts.positional) != 1 {
-		return r.fail(sess, errors.New("usage: resize <name> [--cpu=N] [--memory=4G] [--disk=20G]"))
+		return r.fail(sess, errors.New("usage: resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--instance-type=TYPE]"))
 	}
 	cpu, err := r.parseCPU(opts.str("cpu"))
 	if err != nil {
@@ -274,7 +281,7 @@ func (r *Runner) cmdResize(ctx context.Context, args []string, sess *IO) int {
 		return r.fail(sess, err)
 	}
 	progress.From(ctx).Step("resizing container %s", opts.positional[0])
-	if err := r.vms.Resize(ctx, opts.positional[0], cpu, memory, disk); err != nil {
+	if err := r.vms.ResizeResources(ctx, opts.positional[0], cpu, memory, disk, opts.str("instance-type")); err != nil {
 		return r.fail(sess, err)
 	}
 	info, err := r.vms.Stat(ctx, opts.positional[0])
@@ -283,6 +290,10 @@ func (r *Runner) cmdResize(ctx context.Context, args []string, sess *IO) int {
 	}
 	if opts.bool("json") {
 		return r.writeJSON(sess, info)
+	}
+	if info.VM.EC2 != nil {
+		fmt.Fprintf(sess.Out, "resized %s: instance-type=%s disk=%s\n", info.VM.Name, info.VM.EC2.InstanceType, config.DiskSize(info.VM.Disk))
+		return 0
 	}
 	fmt.Fprintf(sess.Out, "resized %s: cpu=%d memory=%s disk=%s\n",
 		info.VM.Name, info.VM.CPU, config.DiskSize(info.VM.Memory).String(), config.DiskSize(info.VM.Disk).String())
