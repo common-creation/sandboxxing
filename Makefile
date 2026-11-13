@@ -7,9 +7,13 @@ CONFDIR ?= /etc/sandboxxing
 CONFIG ?= $(CONFDIR)/config.json
 # The agent runs inside the Lambda MicroVMs, which are ARM64 only.
 AGENT := deploy/microvm-image/sandboxxing-agent
+EC2_ASSETS := deploy/ec2-assets
+EFS_DEB := $(EC2_ASSETS)/amazon-efs-utils.deb
+EFS_DEB_URL := https://amazon-efs-utils.aws.com/repo/deb/ubuntu/24.04/pool/main/a/amazon-efs-utils/amazon-efs-utils-3.3.5-1_amd64.deb
+EFS_DEB_SHA256 := 902983e87594566ab7c6f40acd401563112d36f02f90dadfcde1cbd74dc520f8
 CDK := cd deploy/cdk && npx cdk
 
-.PHONY: help build agent test vet fmt install uninstall clean cdk-install cdk-synth cdk-deploy cdk-destroy
+.PHONY: help build agent test vet fmt install uninstall clean cdk-install cdk-synth cdk-deploy cdk-destroy ec2-assets cdk-ec2-synth cdk-ec2-deploy cdk-ec2-destroy
 
 help:
 	@echo "targets:"
@@ -24,12 +28,32 @@ help:
 	@echo "  cdk-synth  synthesize the AWS stack of the microvm backend"
 	@echo "  cdk-deploy deploy it (BASE_IMAGE_VERSION=<version> is required)"
 	@echo "  cdk-destroy delete it, including the home directories"
+	@echo "  cdk-ec2-synth, cdk-ec2-deploy, cdk-ec2-destroy    manage the independent EC2 stack"
 
 build:
 	$(GO) build -trimpath -o bin/sandboxxing ./cmd/sandboxxing
 
 agent:
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -o $(AGENT) ./cmd/sandboxxing-agent
+
+# CDK uploads these raw files as content-addressed S3 objects. The .deb is
+# the Ubuntu 24.04 amd64 release from the AWS EFS APT repository.
+ec2-assets: $(EFS_DEB)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -o $(EC2_ASSETS)/sandboxxing-agent ./cmd/sandboxxing-agent
+
+$(EFS_DEB): Makefile
+	curl --fail --location --retry 3 --output $@.tmp $(EFS_DEB_URL)
+	echo "$(EFS_DEB_SHA256)  $@.tmp" | sha256sum --check -
+	mv $@.tmp $@
+
+cdk-ec2-synth: ec2-assets
+	$(CDK) synth -c backend=ec2
+
+cdk-ec2-deploy: ec2-assets
+	$(CDK) deploy -c backend=ec2
+
+cdk-ec2-destroy: ec2-assets
+	$(CDK) destroy -c backend=ec2
 
 cdk-install:
 	cd deploy/cdk && npm ci
@@ -99,4 +123,4 @@ uninstall:
 	@echo "configuration in $(DESTDIR)$(CONFDIR) and data in /var/lib/sandboxxing were kept"
 
 clean:
-	rm -rf bin $(AGENT)
+	rm -rf bin $(AGENT) $(EC2_ASSETS)/sandboxxing-agent $(EFS_DEB) $(EFS_DEB).tmp
