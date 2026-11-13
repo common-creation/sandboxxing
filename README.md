@@ -241,7 +241,7 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
     [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-    [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+    [--nested] [--backend=nspawn|microvm|ec2] [--instance-type=TYPE] [--autostop=30m]
     [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
@@ -288,17 +288,17 @@ ssh "$name@host" -p 2222
 ### `rm` — remove
 
 ```
-rm <name>...
+rm <name>... [--force]
 ```
 
 ### `start` / `stop` — start and stop
 
 ```
 start <name>... [--json]
-stop <name>... [--json]
+stop <name>... [--force] [--json]
 ```
 
-- Both work for either backend. `stop` closes the SSH connections of the
+- Both commands work for all backends. `stop` closes the SSH connections of the
   container (logins, SFTP and port forwards), so that a forward does not start
   it again right away.
 - A stopped container also starts on the next login, as before. For a
@@ -324,7 +324,7 @@ cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nes
 ### `resize` — change resources
 
 ```
-resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
+resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--instance-type=TYPE]
 ```
 
 - CPU and memory take effect immediately as systemd transient unit properties
@@ -341,7 +341,7 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
 edit <name> --autostop=DURATION [--json]
 ```
 
-- Changes the autostop time of a MicroVM, such as `--autostop=2h`. `0` never
+- Changes the autostop time of a MicroVM or EC2 sandbox, such as `--autostop=2h`. `0` never
   stops it. The new time applies to the current idle period.
 
 ### `stat` — status and usage
@@ -478,7 +478,8 @@ scp -r ./site demo@host:/srv/
 | `default_memory` | `2G` | Default memory for `new` |
 | `default_disk` | `10G` | Default disk for `new` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
-| `default_backend` | `nspawn` | backend of `new` when `--backend` is omitted (`nspawn` or `microvm`) |
+| `default_backend` | `nspawn` | backend of `new` when `--backend` is omitted (`nspawn`, `microvm` or `ec2`) |
+| `ec2` | (none) | settings of the [AWS EC2 backend](#aws-ec2-backend) |
 | `microvm` | (none) | settings of the MicroVM backend, see [AWS Lambda MicroVM backend](#aws-lambda-microvm-backend) |
 
 ## Port forwarding
@@ -625,6 +626,35 @@ ssh dockerbox@host -p 2222
   started again. After enabling `nested` host wide and restarting the daemon
   (`systemctl restart sandboxxing`), run `restart <name>` to apply it to a
   container that already exists.
+
+## AWS EC2 backend
+
+Each sandbox is an Ubuntu 24.04 LTS x86_64 instance. The default type is `m7i-flex.large`. Its root volume (including `/root`) persists across stops. To provision the private subnet, NAT gateway, dedicated EFS file system, agent assets and IAM policy in your AWS region:
+
+```sh
+make cdk-install
+make cdk-ec2-deploy
+```
+
+Attach the output `DaemonPolicyArn` to the daemon's AWS identity and merge `DaemonConfig` into `/etc/sandboxxing/config.json`. Install the AWS CLI and Session Manager plugin on the daemon host, run `sandboxxing -check`, then restart the service. The daemon forwards connections through SSM to the guest agent on loopback. Users connect to the daemon for shell access, SFTP and port forwarding. The instance security group has no inbound rules.
+
+```sh
+ssh sandbox new --backend=ec2 --name=work --disk=20G --share=/team:/work
+ssh work@sandbox
+ssh sandbox resize work --disk=40G --instance-type=m7i-flex.xlarge
+ssh sandbox stop work
+ssh sandbox start work
+ssh sandbox restart work
+ssh sandbox rm work
+```
+
+Set `default_backend` to `ec2` to use EC2 without a flag. `new --instance-type` selects another compatible type. An omitted disk size uses the AMI's root volume size. EC2 accepts whole GiB and supports growth. For a running sandbox, combined resize grows the volume and filesystem, stops the instance, changes its type, and starts it again. Disk-only growth is online. A stopped instance stays stopped after resize and finishes filesystem growth on its next boot.
+
+`stop --force` and `rm --force` skip the guest OS shutdown; pending writes can be lost. `rm` terminates the instance and deletes its root EBS volume. The `cp` management command cannot clone EC2 sandboxes. Idle EC2 sandboxes stop after 30 minutes without SSH connections. Use `edit work --autostop=0` to disable this. A new SSH connection starts a stopped sandbox.
+
+**Shared directories.** Set `ec2.shares` for every EC2 sandbox or repeat `new --share=PATH[:TARGET][:ro]` for one sandbox. The default target is `/shared/<basename>`; a per-sandbox share overrides the default at the same target. For example, `--share=/tools:/opt/tools:ro` grants read-only access through the instance's IAM role. The guest mounts the shares before accepting sessions. Changes to the configured defaults take effect on the next boot. Sandboxes using the same source path on this EFS see the same files. The MicroVM backend uses its own file system.
+
+Removing an instance keeps its shared directories. Destroying the EC2 stack with `make cdk-ec2-destroy` removes its instances, root volumes **and the shared EFS data**. EC2, EBS, EFS and the NAT gateway incur AWS charges.
 
 ## AWS Lambda MicroVM backend
 

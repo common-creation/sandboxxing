@@ -233,7 +233,7 @@ demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
 ```
 new [--name=N] [--image=I] [--cpu=N] [--memory=4G] [--disk=20G]
     [--comment=TEXT] [--tag=T] [--env K=V] [--share=PATH[:TARGET][:ro]]
-    [--nested] [--backend=nspawn|microvm] [--autostop=30m]
+    [--nested] [--backend=nspawn|microvm|ec2] [--instance-type=TYPE] [--autostop=30m]
     [--setup-script=FILE] [--prompt=TEXT] [--json]
 ```
 
@@ -280,17 +280,17 @@ ssh "$name@host" -p 2222
 ### `rm` — 削除
 
 ```
-rm <name>...
+rm <name>... [--force]
 ```
 
 ### `start` / `stop` — 起動と停止
 
 ```
 start <name>... [--json]
-stop <name>... [--json]
+stop <name>... [--force] [--json]
 ```
 
-- どちらのバックエンドでも使えます。`stop` はそのコンテナへの SSH 接続
+- すべてのバックエンドで使えます。`stop` はそのコンテナへの SSH 接続
   (ログイン、SFTP、ポートフォワード)も閉じます。フォワードの次の接続で
   すぐに起動し直さないようにするためです。
 - 停止したコンテナは、これまでどおり次のログインでも起動します。MicroVM の
@@ -316,7 +316,7 @@ cp <source> [new-name] [--cpu=N] [--memory=4G] [--disk=20G] [--copy-tags] [--nes
 ### `resize` — リソース変更
 
 ```
-resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
+resize <name> [--cpu=N] [--memory=4G] [--disk=20G] [--instance-type=TYPE]
 ```
 
 - CPU とメモリは systemd の transient unit プロパティ (`CPUQuota`,
@@ -333,7 +333,7 @@ resize <name> [--cpu=N] [--memory=4G] [--disk=20G]
 edit <name> --autostop=DURATION [--json]
 ```
 
-- MicroVM の autostop 時間を変更します(例: `--autostop=2h`)。`0` を指定すると
+- MicroVM または EC2 の autostop 時間を変更します(例: `--autostop=2h`)。`0` を指定すると
   自動停止しません。新しい時間は、進行中の無接続時間にもそのまま適用されます。
 
 ### `stat` — 状態と使用量
@@ -470,7 +470,8 @@ scp -r ./site demo@host:/srv/
 | `default_memory` | `2G` | `new` の既定メモリ |
 | `default_disk` | `10G` | `new` の既定ディスク |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
-| `default_backend` | `nspawn` | `new` の既定バックエンド(`nspawn` / `microvm`) |
+| `default_backend` | `nspawn` | `new` の既定バックエンド(`nspawn` / `microvm` / `ec2`) |
+| `ec2` | (なし) | [AWS EC2 バックエンド](#aws-ec2-バックエンド)の設定 |
 | `microvm` | (なし) | MicroVM バックエンドの設定。[AWS Lambda MicroVM バックエンド](#aws-lambda-microvm-バックエンド)を参照 |
 
 ## ポートフォワーディング
@@ -613,6 +614,35 @@ ssh dockerbox@host -p 2222
   ホスト全体で `nested` を有効にしてからデーモンを再起動
   (`systemctl restart sandboxxing`)し、既存コンテナには `restart <name>` で
   反映させてください。
+
+## AWS EC2 バックエンド
+
+Ubuntu 24.04 LTS x86_64 の EC2 インスタンスをサンドボックスとして起動します。既定のタイプは `m7i-flex.large` です。`/root` を含むルート EBS は停止後も残ります。EC2 専用のサブネット、NAT ゲートウェイ、EFS、agent 配布物、IAM ポリシーを次の手順でデプロイします。
+
+```sh
+make cdk-install
+make cdk-ec2-deploy
+```
+
+出力の `DaemonPolicyArn` を daemon の IAM ID にアタッチし、`DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。daemon ホストに AWS CLI と Session Manager plugin をインストールし、`sandboxxing -check` を実行してサービスを再起動します。SSH、SFTP、ポート転送の接続先は daemon です。daemon は SSM 経由でゲストのループバック上の agent に接続します。インスタンスのセキュリティグループの受信ルールは空です。
+
+```sh
+ssh sandbox new --backend=ec2 --name=work --disk=20G --share=/team:/work
+ssh work@sandbox
+ssh sandbox resize work --disk=40G --instance-type=m7i-flex.xlarge
+ssh sandbox stop work
+ssh sandbox start work
+ssh sandbox restart work
+ssh sandbox rm work
+```
+
+`default_backend` に `ec2` を設定すると `--backend` を省略できます。`new --instance-type` で互換性のあるタイプを選べます。ディスク省略時は AMI のルート EBS サイズを使います。ディスクは整数 GiB 単位で拡張できます。稼働中に両方を指定すると、EBS とファイルシステムを拡張し、停止、タイプ変更、起動の順に実行します。ディスクだけなら稼働中に拡張します。停止中に resize した場合は停止状態を保ち、次回起動時にファイルシステムの拡張を完了します。
+
+`stop --force` と `rm --force` は OS のシャットダウン処理をスキップします。未書き込みのデータが失われる可能性があります。`rm` はインスタンスとルート EBS を削除します。管理コマンド `cp` による EC2 の複製はできません。SSH が無接続の状態が 30 分続くと自動停止します。`edit work --autostop=0` で無効にできます。停止後も SSH 接続で同じインスタンスを起動できます。
+
+**共有ディレクトリ。** 全 EC2 向けには `ec2.shares`、個別には `new --share=PATH[:TARGET][:ro]` を使います。複数指定でき、マウント先の既定は `/shared/<ディレクトリ名>` です。同じマウント先への個別指定を優先します。`--share=/tools:/opt/tools:ro` のように指定すると、そのインスタンスの IAM ロールでも書き込みを制限します。ゲストは共有のマウント後に SSH セッションを受け付けます。設定の変更は次回起動時に反映されます。EC2 専用 EFS 内の同じパスを指定したインスタンス間でファイルを共有できます。MicroVM 用 EFS は独立しています。
+
+個別の `rm` 後も共有データは残ります。`make cdk-ec2-destroy` はスタック内のインスタンス、ルート EBS、**EFS の共有データ**を削除します。EC2、EBS、EFS、NAT ゲートウェイには AWS 利用料金がかかります。
 
 ## AWS Lambda MicroVM バックエンド
 
