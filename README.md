@@ -636,7 +636,11 @@ make cdk-install
 make cdk-ec2-deploy
 ```
 
-Attach the output `DaemonPolicyArn` to the daemon's AWS identity and merge `DaemonConfig` into `/etc/sandboxxing/config.json`. Install the AWS CLI and Session Manager plugin on the daemon host, run `sandboxxing -check`, then restart the service. The daemon forwards connections through SSM to the guest agent on loopback. Users connect to the daemon for shell access, SFTP and port forwarding. The instance security group has no inbound rules.
+Attach the output `DaemonPolicyArn` to the daemon's AWS identity and merge `DaemonConfig` into `/etc/sandboxxing/config.json`. Run `sandboxxing -check`, then restart the service. Users connect to the daemon for shell access, SFTP and port forwarding.
+
+The daemon connects directly to the guest agent on TCP port 8080 of each instance's private address, so it must run inside the stack's VPC (output `VpcId`) or on a network routed to it. For a daemon in the VPC, attach the security group from the output `DaemonSecurityGroupId` to it. For a daemon reached over a VPN or peering connection, deploy with `make cdk-ec2-deploy DAEMON_CIDR=<its CIDR>` instead, on every deploy. The instance security group admits nothing else. The traffic is plain HTTP inside the VPC, authenticated by a per-sandbox secret of which the instance holds only a digest.
+
+Sandbox instances are not registered with AWS Systems Manager: their role has no Session Manager permissions, so other principals in the account cannot open a session to them from the AWS console. EC2 sandboxes created by a version that used Session Manager cannot be reached anymore and must be recreated.
 
 When using both EC2 and Lambda MicroVMs, attach the `DaemonPolicyArn` from each stack. Reserve IAM role and instance profile names beginning with `sbx-ec2-` followed by a 32-character token for sandboxxing. The daemon looks up and cleans up names that may not exist yet, so the policy also permits these operations on matching names at the IAM root path when the `sandboxxing:filesystem` tag is absent.
 

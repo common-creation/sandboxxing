@@ -624,7 +624,11 @@ make cdk-install
 make cdk-ec2-deploy
 ```
 
-出力の `DaemonPolicyArn` を daemon の IAM ID にアタッチし、`DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。daemon ホストに AWS CLI と Session Manager plugin をインストールし、`sandboxxing -check` を実行してサービスを再起動します。SSH、SFTP、ポート転送の接続先は daemon です。daemon は SSM 経由でゲストのループバック上の agent に接続します。インスタンスのセキュリティグループの受信ルールは空です。
+出力の `DaemonPolicyArn` を daemon の IAM ID にアタッチし、`DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。`sandboxxing -check` を実行してサービスを再起動します。SSH、SFTP、ポート転送の接続先は daemon です。
+
+daemon は各インスタンスのプライベートアドレスの TCP 8080 番ポートで待ち受けるゲスト agent に直接接続します。そのため daemon は、スタックの VPC（出力 `VpcId`）の中か、そこへ経路のあるネットワークで動かす必要があります。VPC 内の daemon には、出力 `DaemonSecurityGroupId` のセキュリティグループをアタッチします。VPN やピアリング越しの daemon の場合は、代わりに `make cdk-ec2-deploy DAEMON_CIDR=<daemon の CIDR>` でデプロイします（デプロイのたびに指定します）。インスタンスのセキュリティグループはそれ以外の受信を許可しません。通信は VPC 内の平文 HTTP で、sandbox ごとの secret で認証します。インスタンスが持つのは secret のダイジェストだけです。
+
+sandbox インスタンスは AWS Systems Manager に登録されません。ロールに Session Manager の権限がないため、アカウント内の他のプリンシパルが AWS コンソールからセッションを開くことはできません。Session Manager を使っていたバージョンで作成した EC2 sandbox には接続できなくなるので、作り直してください。
 
 Lambda MicroVMs と併用する場合は、両スタックの `DaemonPolicyArn` をアタッチします。EC2 の IAM ロールとインスタンスプロファイルでは、`sbx-ec2-` に32文字のトークンを続けた名前を sandboxxing 用に予約してください。daemon は未作成の名前でも照会と削除を行うため、ポリシーは IAM のルートパスでこの名前に一致し、`sandboxxing:filesystem` タグがないリソースにもこれらの操作を許可します。
 
