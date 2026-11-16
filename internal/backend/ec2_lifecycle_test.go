@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -61,6 +62,9 @@ func (f *ec2Requests) Do(r *http.Request) (*http.Response, error) {
 			}
 			if r.Form.Get("UserData") == "" {
 				f.t.Fatal("missing bootstrap")
+			}
+			if data, err := base64.StdEncoding.DecodeString(r.Form.Get("UserData")); err != nil || strings.Contains(string(data), "@GUEST_CONFIG@") || !strings.Contains(string(data), "mount:Mount:TimeoutSec") {
+				f.t.Errorf("bootstrap lacks the guest settings: %v", err)
 			}
 			body = "<instancesSet><item><instanceId>i-own</instanceId><instanceType>m7i-flex.large</instanceType></item></instancesSet>"
 			f.power = "running"

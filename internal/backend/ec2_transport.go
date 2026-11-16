@@ -74,6 +74,9 @@ func (t *ec2Transport) client(name string) (*agent.Client, error) {
 //go:embed ec2_bootstrap.sh
 var ec2Bootstrap string
 
+//go:embed ec2_guest_config.sh
+var ec2GuestConfig string
+
 func (b *EC2) userData(_ context.Context, vm *state.VM, mounts []agent.ShareMount) ([]byte, error) {
 	instance, ok := b.transport.state.EC2Of(vm.Name)
 	if !ok || instance.Secret == "" {
@@ -93,7 +96,7 @@ func (b *EC2) userData(_ context.Context, vm *state.VM, mounts []agent.ShareMoun
 		return nil, err
 	}
 	encode := base64.StdEncoding.EncodeToString
-	data := strings.NewReplacer("@CONFIG@", encode(guest), "@ASSETS@", encode(assets)).Replace(ec2Bootstrap)
+	data := strings.NewReplacer("@CONFIG@", encode(guest), "@ASSETS@", encode(assets), "@GUEST_CONFIG@", strings.TrimSpace(ec2GuestConfig)).Replace(ec2Bootstrap)
 	if len(data) > 16<<10 {
 		return nil, errors.New("EC2 bootstrap configuration exceeds the 16 KiB user-data limit")
 	}
