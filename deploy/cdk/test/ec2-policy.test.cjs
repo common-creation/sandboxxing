@@ -125,3 +125,38 @@ test('only the daemon reaches the guest agents', () => {
   assert.deepEqual(inline.Properties.SecurityGroupIngress.map(r => [r.CidrIp, r.IpProtocol, r.FromPort, r.ToPort]),
     [['10.9.0.0/16', 'tcp', 8080, 8080]]);
 });
+
+const ec2Config = t => JSON.parse(t.Outputs.DaemonConfig.Value['Fn::Join'][1]
+  .map(part => (typeof part === 'string' ? part : 'token')).join('')).ec2;
+
+test('the stack VPC keeps sandboxes on private addresses behind NAT', () => {
+  const types = Object.values(template.Resources).map(r => r.Type);
+  assert.ok(types.includes('AWS::EC2::VPC') && types.includes('AWS::EC2::NatGateway'));
+  assert.equal(ec2Config(template).associate_public_ip_address, undefined);
+});
+
+test('the default VPC hosts the sandboxes in its public subnets', () => {
+  // Without a cached lookup CDK substitutes a dummy VPC with public subnets.
+  const env = { account: '123456789012', region: 'us-east-1' };
+  const lookedUp = new SandboxxingEC2Stack(new App({ context: { useDefaultVpc: 'true' } }), 'DefaultVpcTest', { env });
+  const t = Template.fromStack(lookedUp).toJSON();
+  const resources = Object.values(t.Resources);
+  assert.deepEqual(resources.filter(r => /^AWS::EC2::(VPC|Subnet|NatGateway|InternetGateway|EIP)$/.test(r.Type)), []);
+  const vpc = lookedUp.node.findChild('Vpc');
+  const subnetIds = vpc.selectSubnets({ subnetType: SubnetType.PUBLIC }).subnetIds;
+  assert.ok(subnetIds.length > 0);
+  for (const name of ['Guest', 'Daemon', 'Mount']) {
+    assert.equal(t.Resources[groupId(lookedUp, name)['Fn::GetAtt'][0]].Properties.VpcId, vpc.vpcId, name);
+  }
+  assert.deepEqual(resources.filter(r => r.Type === 'AWS::EFS::MountTarget').map(r => r.Properties.SubnetId), subnetIds);
+  const launch = t.Resources[t.Outputs.DaemonPolicyArn.Value.Ref];
+  const subnetGrants = launch.Properties.PolicyDocument.Statement.filter(s => s.Action === 'ec2:RunInstances')
+    .flatMap(s => [s.Resource].flat()).map(r => JSON.stringify(r)).filter(r => r.includes('subnet/'));
+  assert.equal(subnetGrants.length, subnetIds.length);
+  subnetIds.forEach((id, i) => assert.ok(subnetGrants[i].includes('subnet/' + id), subnetGrants[i]));
+  const config = ec2Config(t);
+  assert.equal(config.subnet_id, subnetIds[0]);
+  assert.equal(config.associate_public_ip_address, true);
+  assert.equal(t.Outputs.VpcId.Value, vpc.vpcId);
+  assert.throws(() => new SandboxxingEC2Stack(new App({ context: { useDefaultVpc: 'yes' } }), 'InvalidTest', { env }));
+});

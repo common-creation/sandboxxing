@@ -4,10 +4,11 @@ import { SandboxxingEC2Stack } from '../lib/ec2-stack';
 import { SandboxxingMicroVMStack } from '../lib/stack';
 
 const app = new App();
-// The stack names no account or region: it is deployed to those of the AWS
+// The stacks name no account or region: they are deployed to those of the AWS
 // profile in use, and the availability zones are chosen by CloudFormation at
-// deploy time. So no lookup has to be cached in cdk.context.json, which would
-// hold the account ID of whoever deployed it.
+// deploy time. Only the EC2 stack's default VPC lookup needs both; it is
+// cached in cdk.context.json, which is kept out of the repository because it
+// holds the account ID of whoever deployed it.
 switch (app.node.tryGetContext('backend') ?? 'microvm') {
   case 'microvm':
     new SandboxxingMicroVMStack(app, 'SandboxxingMicroVM', {
@@ -17,6 +18,9 @@ switch (app.node.tryGetContext('backend') ?? 'microvm') {
   case 'ec2':
     new SandboxxingEC2Stack(app, 'SandboxxingEC2', {
       description: 'AWS resources of the sandboxxing EC2 backend',
+      ...(String(app.node.tryGetContext('useDefaultVpc')) === 'true'
+        ? { env: { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION } }
+        : {}),
     });
     break;
   default:

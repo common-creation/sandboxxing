@@ -46,8 +46,10 @@ $(EFS_DEB): Makefile
 	echo "$(EFS_DEB_SHA256)  $@.tmp" | sha256sum --check -
 	mv $@.tmp $@
 
-# DAEMON_CIDR admits a daemon routed into the VPC. Pass it on every deploy.
-EC2_CONTEXT := $(if $(DAEMON_CIDR),-c daemonCidr=$(DAEMON_CIDR))
+# DAEMON_CIDR admits a daemon routed into the VPC. USE_DEFAULT_VPC=true uses
+# the region's default VPC instead of creating one. Pass them on every deploy.
+EC2_CONTEXT := $(if $(DAEMON_CIDR),-c daemonCidr=$(DAEMON_CIDR)) \
+	$(if $(USE_DEFAULT_VPC),-c useDefaultVpc=$(USE_DEFAULT_VPC))
 
 cdk-ec2-synth: ec2-assets
 	$(CDK) synth -c backend=ec2 $(EC2_CONTEXT)

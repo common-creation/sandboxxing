@@ -22,9 +22,7 @@ const mountActions = [
 export class SandboxxingEC2Stack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
-    // S3 and Ubuntu's package mirrors are reached outbound via NAT.
-    const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 1 });
-    const subnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS });
+    const { vpc, subnets, publicIp } = this.network();
     // The description is immutable: changing it would replace the group in use.
     const guest = new ec2.SecurityGroup(this, 'Guest', { vpc, description: 'Sandbox instances: outbound only' });
     // Guests are not managed by Systems Manager, which would let any principal
@@ -222,8 +220,25 @@ export class SandboxxingEC2Stack extends Stack {
           permissions_boundary_arn: boundary.managedPolicyArn,
           agent_s3_uri: agent.s3ObjectUrl,
           efs_utils_s3_uri: helper.s3ObjectUrl,
+          ...(publicIp ? { associate_public_ip_address: true } : {}),
         },
       }),
     });
+  }
+
+  // The stack creates a VPC whose private subnets reach S3 and Ubuntu's
+  // package mirrors via NAT, unless useDefaultVpc selects the region's default
+  // VPC, the only one a Lightsail instance can peer with. It has no NAT, so the
+  // sandboxes then use its public subnets and get public IPv4 addresses for
+  // outbound traffic; the guest security group still admits only the daemon.
+  private network(): { vpc: ec2.IVpc; subnets: ec2.SelectedSubnets; publicIp: boolean } {
+    const useDefaultVpc = String(this.node.tryGetContext('useDefaultVpc') ?? 'false');
+    if (!['true', 'false'].includes(useDefaultVpc)) throw new Error('useDefaultVpc must be true or false');
+    if (useDefaultVpc === 'false') {
+      const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 1 });
+      return { vpc, subnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }), publicIp: false };
+    }
+    const vpc = ec2.Vpc.fromLookup(this, 'Vpc', { isDefault: true });
+    return { vpc, subnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PUBLIC }), publicIp: true };
   }
 }
