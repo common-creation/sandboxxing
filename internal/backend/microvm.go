@@ -35,6 +35,7 @@ import (
 type MicroVMAPI interface {
 	RunMicrovm(ctx context.Context, in *lambdamicrovms.RunMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.RunMicrovmOutput, error)
 	GetMicrovm(ctx context.Context, in *lambdamicrovms.GetMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmOutput, error)
+	GetMicrovmImageVersion(ctx context.Context, in *lambdamicrovms.GetMicrovmImageVersionInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageVersionOutput, error)
 	ResumeMicrovm(ctx context.Context, in *lambdamicrovms.ResumeMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.ResumeMicrovmOutput, error)
 	TerminateMicrovm(ctx context.Context, in *lambdamicrovms.TerminateMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.TerminateMicrovmOutput, error)
 	CreateMicrovmAuthToken(ctx context.Context, in *lambdamicrovms.CreateMicrovmAuthTokenInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.CreateMicrovmAuthTokenOutput, error)
@@ -172,6 +173,56 @@ func (b *MicroVM) Image(name string) (config.MicroVMImage, error) {
 		return config.MicroVMImage{}, fmt.Errorf("unknown MicroVM image %q: use one of %s", name, strings.Join(b.cfg.ImageNames(), ", "))
 	}
 	return img, nil
+}
+
+// MemoryMiB returns the baseline memory of the image version that the
+// current, or else the pinned, MicroVM of a container runs, and zero when it
+// is unknown. The answer is recorded so that it is looked up once per MicroVM.
+func (b *MicroVM) MemoryMiB(ctx context.Context, vm *state.VM) int32 {
+	mv, ok := b.state.MicroVMOf(vm.Name)
+	if !ok {
+		return 0
+	}
+	if mv.MemoryMiB > 0 {
+		return mv.MemoryMiB
+	}
+	version := mv.ImageVersion
+	if mv.ID != "" {
+		out, err := b.vms.GetMicrovm(ctx, &lambdamicrovms.GetMicrovmInput{MicrovmIdentifier: aws.String(mv.ID)})
+		if err != nil {
+			b.log.Debug("look up the MicroVM", "name", vm.Name, "err", err)
+			return 0
+		}
+		if v := aws.ToString(out.ImageVersion); v != "" {
+			version = v
+		}
+	}
+	if version == "" {
+		return 0
+	}
+	out, err := b.vms.GetMicrovmImageVersion(ctx, &lambdamicrovms.GetMicrovmImageVersionInput{
+		ImageIdentifier: aws.String(mv.ImageARN), ImageVersion: aws.String(version),
+	})
+	if err != nil {
+		b.log.Debug("look up the MicroVM image version", "name", vm.Name, "err", err)
+		return 0
+	}
+	var mem int32
+	for _, r := range out.Resources {
+		mem = max(mem, aws.ToInt32(r.MinimumMemoryInMiB))
+	}
+	if mem <= 0 {
+		return 0
+	}
+	if err := b.state.UpdateMicroVM(vm.Name, func(m *state.MicroVM) error {
+		if m.ID == mv.ID {
+			m.MemoryMiB = mem
+		}
+		return nil
+	}); err != nil {
+		b.log.Debug("record the MicroVM memory", "name", vm.Name, "err", err)
+	}
+	return mem
 }
 
 // NewInstanceID returns a fresh identifier for the AWS resources of a
@@ -533,6 +584,8 @@ func (b *MicroVM) runNew(ctx context.Context, vm *state.VM, mv state.MicroVM) er
 		m.StartedAt = startedAt
 		m.Generation = generation
 		m.Secret = secret
+		// The new MicroVM may run another image version.
+		m.MemoryMiB = 0
 		return nil
 	}); err != nil {
 		return err

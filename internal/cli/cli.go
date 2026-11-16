@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,9 +254,9 @@ func (r *Runner) printList(sess *IO, infos []vm.Info, long bool) {
 		return
 	}
 	tw := newTable(sess.Out)
-	tw.header("NAME", "STATUS", "IMAGE", "IP", "SSH")
+	tw.header("NAME", "STATUS", "IMAGE", "SIZE", "IP", "SSH")
 	for _, info := range infos {
-		tw.row(info.VM.Name, statusText(info), info.VM.Image, info.IP, r.vmSSH(info.VM))
+		tw.row(info.VM.Name, statusText(info), info.VM.Image, sizeText(info), info.IP, r.vmSSH(info.VM))
 	}
 	tw.flush()
 	if long {
@@ -265,6 +266,39 @@ func (r *Runner) printList(sess *IO, infos []vm.Info, long bool) {
 			fmt.Fprintln(sess.Out)
 		}
 	}
+}
+
+// sizeText renders the size of a container for the SIZE column: CPU, memory
+// and disk, or the instance type and disk of an EC2 instance. A MicroVM has
+// one vCPU per 2 GiB of baseline memory and no disk size of its own.
+func sizeText(info vm.Info) string {
+	v := info.VM
+	sizeOrDash := func(n int64) string {
+		if n <= 0 {
+			return "-"
+		}
+		return config.DiskSize(n).String()
+	}
+	switch {
+	case v.EC2 != nil:
+		return orDash(v.EC2.InstanceType) + "/" + sizeOrDash(v.Disk)
+	case v.BackendName() == state.BackendMicroVM:
+		mem := int64(info.MicroVMMemoryMiB)
+		if mem <= 0 {
+			return "-/-/-"
+		}
+		cpu := strconv.FormatFloat(float64(mem)/2048, 'f', -1, 64)
+		return cpu + "cpu/" + sizeOrDash(mem<<20) + "/-"
+	default:
+		return strconv.Itoa(v.CPU) + "cpu/" + sizeOrDash(v.Memory) + "/" + sizeOrDash(v.Disk)
+	}
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func (r *Runner) printGroupedList(sess *IO, infos []vm.Info, long bool, keys func(*state.VM) []string) {

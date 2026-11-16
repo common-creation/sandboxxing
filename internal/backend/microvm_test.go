@@ -481,3 +481,22 @@ func TestStartRetryIsReported(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryOfTheRunningImageVersion checks that the memory of a MicroVM is
+// the baseline of the image version it runs, recorded until the next start.
+func TestMemoryOfTheRunningImageVersion(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if got := f.b.MemoryMiB(ctx, f.vm); got != 0 {
+		t.Errorf("memory before the first start = %d, want unknown", got)
+	}
+	if err := f.b.Start(ctx, f.vm); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.b.MemoryMiB(ctx, f.vm); got != microvmtest.ImageMemoryMiB {
+		t.Errorf("memory = %d, want %d", got, microvmtest.ImageMemoryMiB)
+	}
+	if got := f.current(t).MemoryMiB; got != microvmtest.ImageMemoryMiB {
+		t.Errorf("recorded memory = %d, want %d", got, microvmtest.ImageMemoryMiB)
+	}
+}

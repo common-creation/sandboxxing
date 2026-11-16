@@ -8,6 +8,7 @@ import (
 
 	"github.com/common-creation/sandboxxing/internal/config"
 	"github.com/common-creation/sandboxxing/internal/state"
+	"github.com/common-creation/sandboxxing/internal/vm"
 )
 
 func testRunner(t *testing.T) (*Runner, *state.State) {
@@ -175,5 +176,22 @@ func TestAutoStopValues(t *testing.T) {
 	}
 	if _, err := parseAutoStop("soon"); err == nil {
 		t.Error("parseAutoStop accepted soon")
+	}
+}
+
+func TestSizeText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info vm.Info
+		want string
+	}{
+		{"nspawn", vm.Info{VM: &state.VM{CPU: 2, Memory: 4 << 30, Disk: 20 << 30}}, "2cpu/4G/20G"},
+		{"ec2", vm.Info{VM: &state.VM{Backend: state.BackendEC2, Disk: 30 << 30, EC2: &state.EC2{InstanceType: "m7i-flex.large"}}}, "m7i-flex.large/30G"},
+		{"microvm", vm.Info{VM: &state.VM{Backend: state.BackendMicroVM}, MicroVMMemoryMiB: 512}, "0.25cpu/512M/-"},
+		{"microvm unknown", vm.Info{VM: &state.VM{Backend: state.BackendMicroVM}}, "-/-/-"},
+	} {
+		if got := sizeText(tc.info); got != tc.want {
+			t.Errorf("%s: sizeText = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

@@ -570,6 +570,9 @@ type Info struct {
 	Uptime  time.Duration
 	IP      string
 	Metrics *backend.Metrics
+	// MicroVMMemoryMiB is the baseline memory of a MicroVM, zero when it is
+	// unknown or the container is not a MicroVM.
+	MicroVMMemoryMiB int32 `json:",omitempty"`
 }
 
 // List returns the containers matching pattern ("" or "*" means all).
@@ -599,6 +602,12 @@ func (m *Manager) Stat(ctx context.Context, name string) (Info, error) {
 
 func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 	info := Info{VM: vm, IP: vm.IP}
+	if vm.EC2 != nil && info.IP == "" {
+		info.IP = vm.EC2.PrivateIP
+	}
+	if vm.BackendName() == state.BackendMicroVM && m.microvm != nil {
+		info.MicroVMMemoryMiB = m.microvm.MemoryMiB(ctx, vm)
+	}
 	b, err := m.backendFor(vm)
 	if err != nil {
 		return info

@@ -183,11 +183,28 @@ func (f *Fake) GetMicrovm(ctx context.Context, in *lambdamicrovms.GetMicrovmInpu
 	if !ok {
 		return nil, notFound(aws.ToString(in.MicrovmIdentifier))
 	}
-	out := &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String(vm.ID), State: vm.State}
+	out := &lambdamicrovms.GetMicrovmOutput{MicrovmId: aws.String(vm.ID), State: vm.State, ImageVersion: aws.String(ImageVersion)}
 	if vm.StateReason != "" {
 		out.StateReason = aws.String(vm.StateReason)
 	}
 	return out, nil
+}
+
+// ImageVersion and ImageMemoryMiB describe the image version that every fake
+// MicroVM runs.
+const (
+	ImageVersion   = "1"
+	ImageMemoryMiB = 2048
+)
+
+func (f *Fake) GetMicrovmImageVersion(ctx context.Context, in *lambdamicrovms.GetMicrovmImageVersionInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.GetMicrovmImageVersionOutput, error) {
+	if aws.ToString(in.ImageVersion) != ImageVersion {
+		return nil, &mvtypes.ResourceNotFoundException{Message: aws.String("no image version " + aws.ToString(in.ImageVersion))}
+	}
+	return &lambdamicrovms.GetMicrovmImageVersionOutput{
+		ImageArn: in.ImageIdentifier, ImageVersion: in.ImageVersion,
+		Resources: []mvtypes.Resources{{MinimumMemoryInMiB: aws.Int32(ImageMemoryMiB)}},
+	}, nil
 }
 
 func (f *Fake) ResumeMicrovm(ctx context.Context, in *lambdamicrovms.ResumeMicrovmInput, opts ...func(*lambdamicrovms.Options)) (*lambdamicrovms.ResumeMicrovmOutput, error) {

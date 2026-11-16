@@ -103,6 +103,9 @@ type MicroVM struct {
 	Generation int       `json:"generation,omitempty"`
 	// Secret authenticates the daemon at the agent of the current MicroVM.
 	Secret string `json:"secret,omitempty"`
+	// MemoryMiB is the baseline memory of the image version of the current
+	// or last MicroVM. Zero means it has not been looked up yet.
+	MemoryMiB int32 `json:"memory_mib,omitempty"`
 }
 
 // The backends that can run a container.
