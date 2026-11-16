@@ -82,8 +82,8 @@ func (c *EC2Config) validate() error {
 	if c.RolePath == "" {
 		c.RolePath = "/sandboxxing/ec2/"
 	}
-	if !strings.HasPrefix(c.RolePath, "/") || !strings.HasSuffix(c.RolePath, "/") {
-		return errors.New("ec2.role_path must start and end with /")
+	if !validIAMPath(c.RolePath) {
+		return fmt.Errorf("ec2.role_path %q must start and end with / and contain only alphanumerics and /", c.RolePath)
 	}
 	if c.StartTimeout <= 0 {
 		c.StartTimeout = Duration(10 * time.Minute)
@@ -115,4 +115,19 @@ func (c *EC2Config) validate() error {
 		seen[s.MountTarget()] = true
 	}
 	return c.CheckShares(c.Shares)
+}
+
+// validIAMPath reports whether IAM accepts p as the path of a role or an
+// instance profile it creates: alphanumerics between a leading and a
+// trailing slash. CreateRole rejects other characters, such as the hyphen.
+func validIAMPath(p string) bool {
+	if len(p) > 512 || !strings.HasPrefix(p, "/") || !strings.HasSuffix(p, "/") {
+		return false
+	}
+	for _, r := range p {
+		if r != '/' && !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9') {
+			return false
+		}
+	}
+	return true
 }

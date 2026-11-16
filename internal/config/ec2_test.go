@@ -33,3 +33,18 @@ func TestEC2ConfigDefaultsAndShareGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEC2RolePath(t *testing.T) {
+	for path, ok := range map[string]bool{
+		"/sandboxxing/ec2/":                  true,
+		"/sandboxxing/ec2/fs07ad0fabd051c7/": true,
+		"/sandboxxing/ec2/fs-07ad0fabd051/":  false,
+		"/sandboxxing/ec2":                   false,
+	} {
+		c := Default()
+		c.EC2 = &EC2Config{FileSystemID: "fs-test", SubnetID: "subnet-private", SecurityGroupIDs: []string{"sg-closed"}, PermissionsBoundary: "arn:aws:iam::123:policy/limit", AgentS3URI: "s3://assets/agent", EFSUtilsS3URI: "s3://assets/efs.deb", RolePath: path}
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("role_path %q: err = %v, want ok = %v", path, err, ok)
+		}
+	}
+}
