@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "node --require ts-node/register test/ec2-policy.test.cjs",
     "synth": "cdk synth",
     "deploy": "cdk deploy",
     "destroy": "cdk destroy"
