@@ -636,21 +636,28 @@ func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 // EnsureStarted boots a stopped container. This is what makes direct SSH
 // access work even after the host rebooted.
 func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
+	_, err := m.StartIfStopped(ctx, name)
+	return err
+}
+
+// StartIfStopped is EnsureStarted that also reports whether the container
+// had to be started.
+func (m *Manager) StartIfStopped(ctx context.Context, name string) (bool, error) {
 	l := m.startLock(name)
 	l.Lock()
 	defer l.Unlock()
 	vm, ok := m.state.Get(name)
 	if !ok {
-		return fmt.Errorf("container %q not found", name)
+		return false, fmt.Errorf("container %q not found", name)
 	}
 	if err := m.checkIdle(name); err != nil {
-		return err
+		return false, err
 	}
 	// A container created by an older release is updated even while it is
 	// running, so that the fix reaches it without an explicit restart.
 	if vm.BackendName() == state.BackendNspawn && vm.NetConfig < state.NetConfigVersion {
 		if err := m.refreshNetConfig(ctx, vm); err != nil {
-			return err
+			return false, err
 		}
 		if updated, ok := m.state.Get(name); ok {
 			vm = updated
@@ -658,18 +665,28 @@ func (m *Manager) EnsureStarted(ctx context.Context, name string) error {
 	}
 	b, err := m.backendFor(vm)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if (vm.EC2 == nil || (vm.EC2.Ready && vm.EC2.PendingResize == nil)) && b.Running(ctx, vm) {
-		return nil
+		return false, nil
 	}
 	m.log.Info("starting container on demand", "name", name)
 	progress.From(ctx).Step("container %s was stopped, starting it", name)
+	began := time.Now()
 	if err := b.Start(ctx, vm); err != nil {
-		return err
+		// The error otherwise only reaches the client, which may already
+		// have gone away.
+		elapsed := time.Since(began).Round(time.Millisecond)
+		if ctx.Err() != nil {
+			m.log.Warn("starting container on demand was cancelled", "name", name, "elapsed", elapsed, "err", err)
+		} else {
+			m.log.Error("starting container on demand failed", "name", name, "elapsed", elapsed, "err", err)
+		}
+		return false, err
 	}
+	m.log.Info("started container on demand", "name", name, "elapsed", time.Since(began).Round(time.Millisecond))
 	m.resetIdle(name)
-	return nil
+	return true, nil
 }
 
 // MigrateNetwork brings every container created by an older release up to
