@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -52,10 +53,27 @@ func (b *ec2Control) RemoveForce(_ context.Context, _ *state.VM, force bool) err
 func (b *ec2Control) StatusOf(context.Context, *state.VM) backend.Status { return backend.Status{} }
 
 func TestEC2ControlCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.DefaultBackend = state.BackendEC2
-	cfg.EC2 = &config.EC2Config{DefaultImage: config.DefaultEC2Image, Shares: []config.Share{{Path: "/common"}}}
-	st, err := state.Open(filepath.Join(t.TempDir(), "state.json"))
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"default_backend": "ec2",
+		"ec2": {
+			"subnet_id": "subnet-test",
+			"security_group_ids": ["sg-test"],
+			"efs_file_system_id": "fs-test",
+			"permissions_boundary_arn": "arn:aws:iam::123:policy/limit",
+			"agent_s3_uri": "s3://assets/agent",
+			"efs_utils_s3_uri": "s3://assets/efs.deb",
+			"shares": [{"path": "/common"}]
+		}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +94,10 @@ func TestEC2ControlCommands(t *testing.T) {
 		}
 		return out.String()
 	}
+	name := strings.TrimSpace(run(0, "new"))
+	if v, ok := st.Get(name); !ok || v.BackendName() != state.BackendEC2 {
+		t.Fatalf("new did not create %q with the configured EC2 backend", name)
+	}
 	out := run(0, "new", "--name=cloud", "--share=/tools:/opt/tools:ro", "--json")
 	for _, want := range []string{"m7i-flex.large", "/common", "/opt/tools"} {
 		if !strings.Contains(out, want) {
@@ -90,7 +112,7 @@ func TestEC2ControlCommands(t *testing.T) {
 	run(0, "restart", "cloud")
 	run(0, "stop", "--force", "cloud")
 	run(0, "rm", "cloud", "--force")
-	want := []string{"create m7i-flex.large", "resize m7i-flex.xlarge", "restart", "force-stop", "force-rm"}
+	want := []string{"create m7i-flex.large", "create m7i-flex.large", "resize m7i-flex.xlarge", "restart", "force-stop", "force-rm"}
 	if !reflect.DeepEqual(fake.calls, want) {
 		t.Errorf("calls %v, want %v", fake.calls, want)
 	}
