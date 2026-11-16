@@ -220,13 +220,15 @@ func (m *Manager) stopIfIdle(ctx context.Context, name string, now time.Time) er
 	if busy || !idle {
 		return nil
 	}
-	m.log.Info("stopping a container without SSH connections", "name", name, "autostop", after)
 	b, err := m.backendFor(vm)
 	if err != nil {
 		return err
 	}
+	// A stopped EC2 sandbox stays idle, so it is seen on every round; only
+	// one that is still running is worth a log record.
 	if vm.BackendName() == state.BackendEC2 && !b.Running(ctx, vm) {
 		return nil
 	}
+	m.log.Info("stopping a container without SSH connections", "name", name, "autostop", after)
 	return b.Stop(ctx, vm)
 }
