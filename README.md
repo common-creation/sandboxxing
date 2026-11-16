@@ -656,7 +656,7 @@ ssh sandbox restart work
 ssh sandbox rm work
 ```
 
-Set `default_backend` to `ec2` to use EC2 without a flag. `new --instance-type` selects another compatible type. An omitted disk size uses the AMI's root volume size. EC2 accepts whole GiB and supports growth. For a running sandbox, combined resize grows the volume and filesystem, stops the instance, changes its type, and starts it again. Disk-only growth is online. A stopped instance stays stopped after resize and finishes filesystem growth on its next boot.
+Set `default_backend` to `ec2` to use EC2 without a flag. `new --instance-type` selects another compatible type; set `ec2.default_instance_type` to change the default. An omitted disk size uses the AMI's root volume size. EC2 accepts whole GiB and supports growth. For a running sandbox, combined resize grows the volume and filesystem, stops the instance, changes its type, and starts it again. Disk-only growth is online. A stopped instance stays stopped after resize and finishes filesystem growth on its next boot.
 
 `stop --force` and `rm --force` skip the guest OS shutdown; pending writes can be lost. `rm` terminates the instance and deletes its root EBS volume. The `cp` management command cannot clone EC2 sandboxes. Idle EC2 sandboxes stop after 30 minutes without SSH connections. Use `edit work --autostop=0` to disable this. A new SSH connection starts a stopped sandbox.
 
