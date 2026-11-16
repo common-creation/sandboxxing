@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Aws, CfnOutput, CustomResource, Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
+import { Aws, CfnOutput, CustomResource, Duration, Fn, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as efs from 'aws-cdk-lib/aws-efs';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -86,7 +86,8 @@ export class SandboxxingEC2Stack extends Stack {
       ],
     });
     // The filesystem ID distinguishes stacks across regions in global IAM.
-    const rolePath = `/sandboxxing/ec2/${shares.fileSystemId}/`;
+    // IAM paths admit only alphanumerics between slashes, so drop its hyphen.
+    const rolePath = `/sandboxxing/ec2/${Fn.join('', Fn.split('-', shares.fileSystemId))}/`;
     const iamArn = `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:`;
     const role = iamArn + 'role' + rolePath + 'sbx-ec2-*';
     const profile = iamArn + 'instance-profile' + rolePath + 'sbx-ec2-*';

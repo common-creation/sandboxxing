@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { isDeepStrictEqual } = require('node:util');
 const { test } = require('node:test');
-const { App, Aws } = require('aws-cdk-lib');
+const { App, Aws, Fn } = require('aws-cdk-lib');
 const { Template } = require('aws-cdk-lib/assertions');
 const { SubnetType } = require('aws-cdk-lib/aws-ec2');
 const { SandboxxingEC2Stack } = require('../lib/ec2-stack.ts');
@@ -61,7 +61,7 @@ test('EC2 launch, lifecycle and resize grants match their resource types and own
 
 test('missing IAM names are authorized only for lookup and cleanup', () => {
   const iamArn = `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:`;
-  const guestPath = `/sandboxxing/ec2/${shares.fileSystemId}/sbx-ec2-*`;
+  const guestPath = `/sandboxxing/ec2/${Fn.join('', Fn.split('-', shares.fileSystemId))}/sbx-ec2-*`;
   const role = iamArn + 'role' + guestPath;
   const profile = iamArn + 'instance-profile' + guestPath;
   const boundary = stack.node.findChild('GuestBoundary');
