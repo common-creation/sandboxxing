@@ -224,9 +224,14 @@ ls [-l] [--group=tag|type] [--json] [name|pattern]
 
 ```
 $ ssh sandbox ls
-NAME   STATUS   IMAGE   IP           SSH
-demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
+NAME   STATUS   IMAGE   SIZE          IP           SSH
+demo   running  arch    2cpu/2G/10G   10.100.0.2   ssh demo@sandbox -p 2222
 ```
+
+`SIZE` は CPU/メモリ/ディスクです。EC2 サンドボックスはインスタンスタイプと
+ディスク（`m7i-flex.large/20G`）、およびプライベート IP アドレスを表示します。
+MicroVM はイメージバージョンのベースラインメモリと、2 GB あたり 1 vCPU で
+換算した CPU を表示し、ディスクは `-` になります（`1cpu/2G/-`）。
 
 ### `new` — 作成
 

@@ -232,9 +232,14 @@ ls [-l] [--group=tag|type] [--json] [name|pattern]
 
 ```
 $ ssh sandbox ls
-NAME   STATUS   IMAGE   IP           SSH
-demo   running  arch    10.100.0.2   ssh demo@sandbox -p 2222
+NAME   STATUS   IMAGE   SIZE          IP           SSH
+demo   running  arch    2cpu/2G/10G   10.100.0.2   ssh demo@sandbox -p 2222
 ```
+
+`SIZE` is CPU/memory/disk. An EC2 sandbox shows its instance type and disk
+(`m7i-flex.large/20G`) and its private IP address. A MicroVM shows the
+baseline memory of its image version with one vCPU per 2 GB, and no disk
+(`1cpu/2G/-`).
 
 ### `new` — create
 
