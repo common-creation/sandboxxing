@@ -88,19 +88,40 @@ test('missing IAM names are authorized only for lookup and cleanup', () => {
   }
 });
 
-test('daemon can create tagged access points and open SSM sessions on its guests', () => {
+test('daemon can create tagged access points', () => {
   checkGrant('elasticfilesystem:DescribeAccessPoints', '*');
   checkGrant('elasticfilesystem:CreateAccessPoint', shares.fileSystemArn);
   checkGrant('elasticfilesystem:TagResource', shares.fileSystemArn, {
     StringEquals: { 'elasticfilesystem:CreateAction': 'CreateAccessPoint' },
   });
-  checkGrant('ssm:StartSession', instance, {
-    StringEquals: { 'ssm:resourceTag/sandboxxing:filesystem': shares.fileSystemId },
-  });
-  checkGrant('ssm:StartSession', `arn:${Aws.PARTITION}:ssm:${Aws.REGION}::document/AWS-StartSSHSession`);
-  for (const action of ['ssm:TerminateSession', 'ssmmessages:OpenDataChannel']) {
-    checkGrant(action, regionalArn('ssm') + 'session/*', {
-      StringEquals: { 'ssm:resourceTag/aws:ssmmessages:session-id': '${aws:userid}' },
-    });
-  }
+});
+
+const sessionManager = /^(ssm|ssmmessages|ec2messages):/;
+
+test('neither the daemon nor a guest may use Systems Manager', () => {
+  assert.deepEqual(grants.filter(grant => sessionManager.test(grant.action)), []);
+  const boundary = stack.resolve(stack.node.findChild('GuestBoundary').managedPolicyArn).Ref;
+  const allowed = template.Resources[boundary].Properties.PolicyDocument.Statement.flatMap(s => [s.Action].flat());
+  assert.ok(allowed.length > 0);
+  assert.deepEqual(allowed.filter(action => sessionManager.test(action) || action.includes('*')), []);
+});
+
+const groupId = (s, name) => s.resolve(s.node.findChild(name).securityGroupId);
+const ingressOf = (t, group) => Object.values(t.Resources).filter(r => r.Type === 'AWS::EC2::SecurityGroupIngress'
+  && isDeepStrictEqual(r.Properties.GroupId, group)).map(r => r.Properties);
+
+test('only the daemon reaches the guest agents', () => {
+  const guest = groupId(stack, 'Guest');
+  const daemon = groupId(stack, 'Daemon');
+  const rules = ingressOf(template, guest);
+  assert.equal(rules.length, 1);
+  assert.deepEqual([rules[0].IpProtocol, rules[0].FromPort, rules[0].ToPort], ['tcp', 8080, 8080]);
+  assert.deepEqual(rules[0].SourceSecurityGroupId, daemon);
+  assert.equal(template.Resources[guest['Fn::GetAtt'][0]].Properties.SecurityGroupIngress, undefined);
+  assert.deepEqual(template.Outputs.DaemonSecurityGroupId.Value, daemon);
+
+  const routed = new SandboxxingEC2Stack(new App({ context: { daemonCidr: '10.9.0.0/16' } }), 'RoutedTest');
+  const inline = Template.fromStack(routed).toJSON().Resources[groupId(routed, 'Guest')['Fn::GetAtt'][0]];
+  assert.deepEqual(inline.Properties.SecurityGroupIngress.map(r => [r.CidrIp, r.IpProtocol, r.FromPort, r.ToPort]),
+    [['10.9.0.0/16', 'tcp', 8080, 8080]]);
 });

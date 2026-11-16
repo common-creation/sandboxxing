@@ -46,11 +46,14 @@ $(EFS_DEB): Makefile
 	echo "$(EFS_DEB_SHA256)  $@.tmp" | sha256sum --check -
 	mv $@.tmp $@
 
+# DAEMON_CIDR admits a daemon routed into the VPC. Pass it on every deploy.
+EC2_CONTEXT := $(if $(DAEMON_CIDR),-c daemonCidr=$(DAEMON_CIDR))
+
 cdk-ec2-synth: ec2-assets
-	$(CDK) synth -c backend=ec2
+	$(CDK) synth -c backend=ec2 $(EC2_CONTEXT)
 
 cdk-ec2-deploy: ec2-assets
-	$(CDK) deploy -c backend=ec2
+	$(CDK) deploy -c backend=ec2 $(EC2_CONTEXT)
 
 cdk-ec2-destroy: ec2-assets
 	$(CDK) destroy -c backend=ec2

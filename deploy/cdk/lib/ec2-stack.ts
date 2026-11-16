@@ -11,13 +11,8 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
-const ssmGuestActions = [
-  'ssm:UpdateInstanceInformation',
-  'ssmmessages:CreateControlChannel',
-  'ssmmessages:CreateDataChannel',
-  'ssmmessages:OpenControlChannel',
-  'ssmmessages:OpenDataChannel',
-];
+// The data port of the guest agent (agent.DataPort).
+const agentPort = ec2.Port.tcp(8080);
 const mountActions = [
   'elasticfilesystem:ClientMount',
   'elasticfilesystem:ClientWrite',
@@ -27,10 +22,23 @@ const mountActions = [
 export class SandboxxingEC2Stack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
-    // SSM, S3, and Ubuntu's package mirrors are reached outbound via NAT.
+    // S3 and Ubuntu's package mirrors are reached outbound via NAT.
     const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 1 });
     const subnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS });
+    // The description is immutable: changing it would replace the group in use.
     const guest = new ec2.SecurityGroup(this, 'Guest', { vpc, description: 'Sandbox instances: outbound only' });
+    // Guests are not managed by Systems Manager, which would let any principal
+    // with ssm:StartSession into them. Only the daemon reaches the agent.
+    const daemon = new ec2.SecurityGroup(this, 'Daemon', {
+      vpc,
+      description: 'Attach to the sandboxxing daemon: reaches the guest agents',
+      allowAllOutbound: false,
+    });
+    daemon.addEgressRule(guest, agentPort, 'Guest agents');
+    guest.addIngressRule(daemon, agentPort, 'Sandboxxing daemon');
+    // A daemon routed into the VPC (VPN, peering) cannot carry the group.
+    const daemonCidr = this.node.tryGetContext('daemonCidr');
+    if (daemonCidr) guest.addIngressRule(ec2.Peer.ipv4(daemonCidr), agentPort, 'Sandboxxing daemon network');
     const mount = new ec2.SecurityGroup(this, 'Mount', { vpc, allowAllOutbound: false });
     mount.addIngressRule(guest, ec2.Port.tcp(2049), 'Sandbox EFS mounts');
     const shares = new efs.FileSystem(this, 'Shares', {
@@ -65,7 +73,6 @@ export class SandboxxingEC2Stack extends Stack {
     const helper = new s3assets.Asset(this, 'MountHelper', { path: path.join(data, 'amazon-efs-utils.deb') });
     const boundary = new iam.ManagedPolicy(this, 'GuestBoundary', {
       statements: [
-        new iam.PolicyStatement({ actions: ssmGuestActions, resources: ['*'] }),
         new iam.PolicyStatement({
           actions: ['s3:GetObject'],
           resources: [agent.bucket.arnForObjects(agent.s3ObjectKey), helper.bucket.arnForObjects(helper.s3ObjectKey)],
@@ -93,7 +100,6 @@ export class SandboxxingEC2Stack extends Stack {
     const absentProfile = iamArn + 'instance-profile/' + guestName;
     const untagged = { Null: { 'aws:ResourceTag/sandboxxing:filesystem': 'true' } };
     const ec2Arn = `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:`;
-    const sessionArn = `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:session/*`;
     const ap = `arn:${Aws.PARTITION}:elasticfilesystem:${Aws.REGION}:${Aws.ACCOUNT_ID}:access-point/*`;
     const belongs = { StringEquals: { 'aws:ResourceTag/sandboxxing:filesystem': shares.fileSystemId } };
     const stmt = (actions: string[], resources: string[], conditions?: Record<string, unknown>) =>
@@ -138,13 +144,6 @@ export class SandboxxingEC2Stack extends Stack {
           belongs,
         ),
         stmt(['ec2:ModifyVolume'], [ec2Arn + 'volume/*'], belongs),
-        stmt(['ssm:StartSession'], [ec2Arn + 'instance/*'], {
-          StringEquals: { 'ssm:resourceTag/sandboxxing:filesystem': shares.fileSystemId },
-        }),
-        stmt(['ssm:StartSession'], [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}::document/AWS-StartSSHSession`]),
-        stmt(['ssm:TerminateSession', 'ssmmessages:OpenDataChannel'], [sessionArn], {
-          StringEquals: { 'ssm:resourceTag/aws:ssmmessages:session-id': '${aws:userid}' },
-        }),
         stmt(['elasticfilesystem:DescribeAccessPoints'], ['*']),
         stmt(['elasticfilesystem:CreateAccessPoint'], [shares.fileSystemArn]),
         stmt(['elasticfilesystem:TagResource'], [shares.fileSystemArn, ap], {
@@ -208,6 +207,8 @@ export class SandboxxingEC2Stack extends Stack {
       '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id',
     );
     new CfnOutput(this, 'DaemonPolicyArn', { value: policy.managedPolicyArn });
+    new CfnOutput(this, 'DaemonSecurityGroupId', { value: daemon.securityGroupId });
+    new CfnOutput(this, 'VpcId', { value: vpc.vpcId });
     new CfnOutput(this, 'DaemonConfig', {
       value: this.toJsonString({
         ec2: {
