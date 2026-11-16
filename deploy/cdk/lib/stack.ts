@@ -280,6 +280,12 @@ export class SandboxxingMicroVMStack extends Stack {
           actions: ['lambda:RunMicrovm'],
           resources: [image.attrImageArn, `${image.attrImageArn}:*`],
         }),
+        // `ls` shows the memory of the image version a MicroVM runs.
+        new iam.PolicyStatement({
+          sid: 'ReadMicroVMImageVersions',
+          actions: ['lambda:GetMicrovmImageVersion'],
+          resources: [image.attrImageArn, `${image.attrImageArn}:*`],
+        }),
         // Running a MicroVM with a connector requires passing it, which the
         // MicroVM documentation does not mention.
         new iam.PolicyStatement({
