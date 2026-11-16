@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 type ec2Requests struct {
 	t                        *testing.T
 	power, kind, token, fail string
+	publicIP                 bool
 	size, target             int
 	events                   []string
 }
@@ -50,7 +52,7 @@ func (f *ec2Requests) Do(r *http.Request) (*http.Response, error) {
 			if f.power != "" {
 				f.t.Fatal("duplicate RunInstances")
 			}
-			checks := map[string]string{"ImageId": "ami-ubuntu", "ClientToken": "token", "InstanceType": config.DefaultEC2InstanceType, "NetworkInterface.1.AssociatePublicIpAddress": "false", "NetworkInterface.1.DeviceIndex": "0", "NetworkInterface.1.SubnetId": "subnet-private", "NetworkInterface.1.SecurityGroupId.1": "sg-closed", "BlockDeviceMapping.1.Ebs.DeleteOnTermination": "true", "BlockDeviceMapping.1.Ebs.Encrypted": "true", "BlockDeviceMapping.1.Ebs.VolumeSize": "8", "MetadataOptions.HttpTokens": "required"}
+			checks := map[string]string{"ImageId": "ami-ubuntu", "ClientToken": "token", "InstanceType": config.DefaultEC2InstanceType, "NetworkInterface.1.AssociatePublicIpAddress": strconv.FormatBool(f.publicIP), "NetworkInterface.1.DeviceIndex": "0", "NetworkInterface.1.SubnetId": "subnet-private", "NetworkInterface.1.SecurityGroupId.1": "sg-closed", "BlockDeviceMapping.1.Ebs.DeleteOnTermination": "true", "BlockDeviceMapping.1.Ebs.Encrypted": "true", "BlockDeviceMapping.1.Ebs.VolumeSize": "8", "MetadataOptions.HttpTokens": "required"}
 			for key, want := range checks {
 				if got := r.Form.Get(key); got != want {
 					f.t.Errorf("%s=%q, want %q", key, got, want)
@@ -231,7 +233,17 @@ func TestEC2ForceAndOwnership(t *testing.T) {
 }
 
 func TestEC2ProvisionDiscoversAcceptedLaunch(t *testing.T) {
+	for _, publicIP := range []bool{false, true} {
+		t.Run("public_ip="+strconv.FormatBool(publicIP), func(t *testing.T) { testEC2ProvisionDiscoversAcceptedLaunch(t, publicIP) })
+	}
+}
+
+// testEC2ProvisionDiscoversAcceptedLaunch also checks that only subnets
+// without NAT, such as the default VPC's, give sandboxes public addresses.
+func testEC2ProvisionDiscoversAcceptedLaunch(t *testing.T, publicIP bool) {
 	b, wire, vm := ec2Fixture(t, "")
+	wire.publicIP = publicIP
+	b.cfg.AssociatePublicIP = publicIP
 	b.cfg.DefaultImage = config.DefaultEC2Image
 	b.cfg.Images = map[string]string{config.DefaultEC2Image: "ami-ubuntu"}
 	b.cfg.SubnetID = "subnet-private"

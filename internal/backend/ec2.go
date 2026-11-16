@@ -269,7 +269,7 @@ func (b *EC2) launch(ctx context.Context, vm *state.VM, profile string, mounts [
 		BlockDeviceMappings: []types.BlockDeviceMapping{block},
 		NetworkInterfaces: []types.InstanceNetworkInterfaceSpecification{{
 			SubnetId: aws.String(b.cfg.SubnetID), Groups: b.cfg.SecurityGroupIDs, DeviceIndex: aws.Int32(0),
-			AssociatePublicIpAddress: aws.Bool(false), DeleteOnTermination: aws.Bool(true),
+			AssociatePublicIpAddress: aws.Bool(b.cfg.AssociatePublicIP), DeleteOnTermination: aws.Bool(true),
 		}},
 		MetadataOptions: &types.InstanceMetadataOptionsRequest{HttpTokens: types.HttpTokensStateRequired},
 		TagSpecifications: []types.TagSpecification{

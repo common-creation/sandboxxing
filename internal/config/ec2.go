@@ -26,6 +26,9 @@ type EC2Config struct {
 	StartTimeout        Duration          `json:"start_timeout"`
 	DefaultImage        string            `json:"default_image"`
 	Images              map[string]string `json:"images"`
+	// AssociatePublicIP gives sandboxes public IPv4 addresses for outbound
+	// traffic in subnets without NAT, such as those of the default VPC.
+	AssociatePublicIP bool `json:"associate_public_ip_address"`
 }
 
 func (c *EC2Config) CheckShare(s Share) error {
