@@ -468,27 +468,40 @@ func (b *EC2) stopInstance(ctx context.Context, vm *state.VM, i *types.Instance,
 	}
 	e := *vm.EC2
 	e.InstanceID = aws.ToString(i.InstanceId)
+	log := b.logger().With("name", vm.Name, "instance", e.InstanceID)
 	if instanceState(i) == types.InstanceStateNamePending {
+		log.Info("waiting for the EC2 instance to finish starting before stopping it")
+		progress.From(ctx).Step("waiting for the EC2 instance of %s to finish starting", vm.Name)
 		var err error
 		i, err = b.waitState(ctx, &e, types.InstanceStateNameRunning)
 		if err != nil {
 			return err
 		}
 	}
+	began := time.Now()
 	switch instanceState(i) {
 	case types.InstanceStateNameStopped, types.InstanceStateNameTerminated, types.InstanceStateNameShuttingDown:
 		return nil
 	case types.InstanceStateNameStopping:
+		log.Info("waiting for the EC2 instance that is already stopping")
+		progress.From(ctx).Step("the EC2 instance of %s is already stopping, waiting for it", vm.Name)
 	case types.InstanceStateNameRunning:
+		log.Info("stopping the EC2 instance", "force", force)
+		progress.From(ctx).Step("stopping the EC2 instance %s of %s", e.InstanceID, vm.Name)
 		_, err := b.api.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{e.InstanceID}, SkipOsShutdown: aws.Bool(force)})
 		if err != nil {
 			return err
 		}
+		progress.From(ctx).Step("waiting for the EC2 instance of %s to stop", vm.Name)
 	default:
 		return fmt.Errorf("cannot stop EC2 instance %s in state %q", e.InstanceID, instanceState(i))
 	}
-	_, err := b.waitState(ctx, &e, types.InstanceStateNameStopped)
-	return err
+	if _, err := b.waitState(ctx, &e, types.InstanceStateNameStopped); err != nil {
+		return err
+	}
+	log.Info("EC2 instance is stopped", "elapsed", time.Since(began).Round(time.Millisecond))
+	progress.From(ctx).Step("the EC2 instance of %s is stopped", vm.Name)
+	return nil
 }
 
 func (b *EC2) RemoveForce(ctx context.Context, vm *state.VM, force bool) error {

@@ -354,3 +354,23 @@ func TestEC2StartReportsProgress(t *testing.T) {
 		t.Fatalf("progress %q, want %q", out.String(), want)
 	}
 }
+
+func TestEC2StopReportsProgress(t *testing.T) {
+	b, wire, vm := ec2Fixture(t, "running")
+	var out strings.Builder
+	ctx := progress.With(t.Context(), progress.New(io.Discard, &out))
+	if err := b.Stop(ctx, vm); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stop:false"}; !slices.Equal(wire.events, want) {
+		t.Fatalf("calls %v, want %v", wire.events, want)
+	}
+	want := strings.Join([]string{
+		"stopping the EC2 instance i-own of work",
+		"waiting for the EC2 instance of work to stop",
+		"the EC2 instance of work is stopped",
+	}, "\n") + "\n"
+	if out.String() != want {
+		t.Fatalf("progress %q, want %q", out.String(), want)
+	}
+}
