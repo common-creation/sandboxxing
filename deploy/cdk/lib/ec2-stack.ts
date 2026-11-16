@@ -82,8 +82,16 @@ export class SandboxxingEC2Stack extends Stack {
     });
     // The filesystem ID distinguishes stacks across regions in global IAM.
     const rolePath = `/sandboxxing/ec2/${shares.fileSystemId}/`;
-    const role = `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:role${rolePath}sbx-ec2-*`;
-    const profile = `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:instance-profile${rolePath}sbx-ec2-*`;
+    const iamArn = `arn:${Aws.PARTITION}:iam::${Aws.ACCOUNT_ID}:`;
+    const role = iamArn + 'role' + rolePath + 'sbx-ec2-*';
+    const profile = iamArn + 'instance-profile' + rolePath + 'sbx-ec2-*';
+    // Get and cleanup calls take only a name. Until an object exists IAM
+    // can authorize the request against that name without the stack path.
+    // The daemon names these objects sbx-ec2- followed by a 32-character token.
+    const guestName = 'sbx-ec2-' + '?'.repeat(32);
+    const absentRole = iamArn + 'role/' + guestName;
+    const absentProfile = iamArn + 'instance-profile/' + guestName;
+    const untagged = { Null: { 'aws:ResourceTag/sandboxxing:filesystem': 'true' } };
     const ec2Arn = `arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:`;
     const sessionArn = `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:session/*`;
     const ap = `arn:${Aws.PARTITION}:elasticfilesystem:${Aws.REGION}:${Aws.ACCOUNT_ID}:access-point/*`;
@@ -144,6 +152,7 @@ export class SandboxxingEC2Stack extends Stack {
         }),
         stmt(['iam:CreateRole'], [role], { StringEquals: { 'iam:PermissionsBoundary': boundary.managedPolicyArn } }),
         stmt(['iam:GetRole', 'iam:TagRole', 'iam:PutRolePolicy', 'iam:DeleteRolePolicy', 'iam:DeleteRole'], [role]),
+        stmt(['iam:GetRole', 'iam:DeleteRolePolicy', 'iam:DeleteRole'], [absentRole], untagged),
         stmt(['iam:PassRole'], [role], { StringEquals: { 'iam:PassedToService': 'ec2.amazonaws.com' } }),
         stmt(
           [
@@ -155,6 +164,11 @@ export class SandboxxingEC2Stack extends Stack {
             'iam:DeleteInstanceProfile',
           ],
           [profile],
+        ),
+        stmt(
+          ['iam:GetInstanceProfile', 'iam:RemoveRoleFromInstanceProfile', 'iam:DeleteInstanceProfile'],
+          [absentProfile],
+          untagged,
         ),
       ],
     });
