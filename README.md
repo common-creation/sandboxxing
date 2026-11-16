@@ -638,6 +638,8 @@ make cdk-ec2-deploy
 
 Attach the output `DaemonPolicyArn` to the daemon's AWS identity and merge `DaemonConfig` into `/etc/sandboxxing/config.json`. Install the AWS CLI and Session Manager plugin on the daemon host, run `sandboxxing -check`, then restart the service. The daemon forwards connections through SSM to the guest agent on loopback. Users connect to the daemon for shell access, SFTP and port forwarding. The instance security group has no inbound rules.
 
+When using both EC2 and Lambda MicroVMs, attach the `DaemonPolicyArn` from each stack. Reserve IAM role and instance profile names beginning with `sbx-ec2-` followed by a 32-character token for sandboxxing. The daemon looks up and cleans up names that may not exist yet, so the policy also permits these operations on matching names at the IAM root path when the `sandboxxing:filesystem` tag is absent.
+
 ```sh
 ssh sandbox new --backend=ec2 --name=work --disk=20G --share=/team:/work
 ssh work@sandbox

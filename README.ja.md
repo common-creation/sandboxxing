@@ -626,6 +626,8 @@ make cdk-ec2-deploy
 
 出力の `DaemonPolicyArn` を daemon の IAM ID にアタッチし、`DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。daemon ホストに AWS CLI と Session Manager plugin をインストールし、`sandboxxing -check` を実行してサービスを再起動します。SSH、SFTP、ポート転送の接続先は daemon です。daemon は SSM 経由でゲストのループバック上の agent に接続します。インスタンスのセキュリティグループの受信ルールは空です。
 
+Lambda MicroVMs と併用する場合は、両スタックの `DaemonPolicyArn` をアタッチします。EC2 の IAM ロールとインスタンスプロファイルでは、`sbx-ec2-` に32文字のトークンを続けた名前を sandboxxing 用に予約してください。daemon は未作成の名前でも照会と削除を行うため、ポリシーは IAM のルートパスでこの名前に一致し、`sandboxxing:filesystem` タグがないリソースにもこれらの操作を許可します。
+
 ```sh
 ssh sandbox new --backend=ec2 --name=work --disk=20G --share=/team:/work
 ssh work@sandbox
