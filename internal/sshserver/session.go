@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/common-creation/sandboxxing/internal/cli"
+	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
 )
 
@@ -329,12 +330,21 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 		s.fail(ch, &notFoundError{user: name})
 		return
 	}
-	if err := s.vms.EnsureStarted(ctx, name); err != nil {
-		s.fail(ch, err)
+	usePTY := session.ptyEnabled()
+	// Starting a stopped container can take minutes on EC2, so its steps are
+	// shown to the client. A client with a PTY has its terminal in raw mode
+	// and needs CRLF line endings.
+	var notice io.Writer = ch.Stderr()
+	if usePTY {
+		notice = newCRLFWriter(notice)
+	}
+	startCtx := progress.With(ctx, progress.New(io.Discard, notice))
+	started, err := s.vms.StartIfStopped(startCtx, name)
+	if err != nil {
+		s.exitStatus(ch, s.failTo(notice, err))
 		return
 	}
 
-	usePTY := session.ptyEnabled()
 	session.mu.Lock()
 	commandLine := session.exec
 	hasExec := session.hasExec
@@ -343,6 +353,15 @@ func (s *Server) runContainer(ctx context.Context, session *sessionRequest, ch s
 	argv := []string{"/bin/bash", "-l"}
 	if hasExec && commandLine != "" {
 		argv = []string{"/bin/bash", "-lc", commandLine}
+	}
+	// The last step of a start on demand goes to the client only; the daemon
+	// log already records that the container started.
+	if started {
+		if len(argv) == 2 {
+			progress.From(startCtx).Step("starting a shell in %s", name)
+		} else {
+			progress.From(startCtx).Step("running the command in %s", name)
+		}
 	}
 	// TERM and the variables the client forwarded must reach the program
 	// inside the container, otherwise full screen applications cannot pick a

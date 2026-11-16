@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
 	"github.com/common-creation/sandboxxing/internal/vm"
 )
@@ -64,7 +65,9 @@ func (s *Server) handleSFTPSubsystem(ctx context.Context, session *sessionReques
 		return
 	}
 
-	if err := s.vms.EnsureStarted(ctx, name); err != nil {
+	// sftp and scp show the extended data, so a slow start is visible there.
+	startCtx := progress.With(ctx, progress.New(io.Discard, ch.Stderr()))
+	if err := s.vms.EnsureStarted(startCtx, name); err != nil {
 		_, _ = io.WriteString(ch.Stderr(), "sandboxxing: "+err.Error()+"\n")
 		s.exitStatus(ch, 1)
 		return
