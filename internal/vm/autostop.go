@@ -87,6 +87,31 @@ func (m *Manager) idleLocked(name string, after time.Duration, now time.Time) bo
 	return a.conns == 0 && now.Sub(a.idleSince) >= after
 }
 
+// autoStopRemaining returns how long a running cloud sandbox has left until
+// it is stopped at now. It reports false when no countdown runs: the
+// container is not a cloud sandbox, never stops or has an open connection.
+// A container the autostop loop has not seen yet has its whole autostop time
+// left. It does not start the idle time of the container.
+func (m *Manager) autoStopRemaining(vm *state.VM, now time.Time) (time.Duration, bool) {
+	if vm.BackendName() != state.BackendMicroVM && vm.BackendName() != state.BackendEC2 {
+		return 0, false
+	}
+	after := vm.AutoStopAfter()
+	if after <= 0 {
+		return 0, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.activity[vm.Name]
+	if !ok {
+		return after, true
+	}
+	if a.conns > 0 {
+		return 0, false
+	}
+	return max(after-now.Sub(a.idleSince), 0), true
+}
+
 // SetAutoStop changes how long a container keeps running without an SSH
 // connection. Zero keeps it running.
 func (m *Manager) SetAutoStop(name string, d time.Duration) error {

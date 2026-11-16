@@ -573,6 +573,10 @@ type Info struct {
 	// MicroVMMemoryMiB is the baseline memory of a MicroVM, zero when it is
 	// unknown or the container is not a MicroVM.
 	MicroVMMemoryMiB int32 `json:",omitempty"`
+	// AutoStopRemaining is how long a running cloud sandbox has left until
+	// it is stopped for having no SSH connection. Nil when no countdown
+	// runs: the container is stopped, never stops or has a connection.
+	AutoStopRemaining *time.Duration `json:",omitempty"`
 }
 
 // List returns the containers matching pattern ("" or "*" means all).
@@ -617,6 +621,9 @@ func (m *Manager) inspect(ctx context.Context, vm *state.VM) Info {
 		return info
 	}
 	info.Running = true
+	if left, ok := m.autoStopRemaining(vm, time.Now()); ok {
+		info.AutoStopRemaining = &left
+	}
 	if !st.Since.IsZero() {
 		info.Uptime = time.Since(st.Since)
 	}

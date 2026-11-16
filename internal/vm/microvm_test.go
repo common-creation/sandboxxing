@@ -275,3 +275,45 @@ func TestMicroVMStartStop(t *testing.T) {
 		t.Error("stopped a container that does not exist")
 	}
 }
+
+// TestMicroVMAutoStopRemaining reports the time left until autostop, and
+// none while a connection is open or when the container never stops.
+func TestMicroVMAutoStopRemaining(t *testing.T) {
+	m, _, st := newMicroVMManager(t)
+	ctx := context.Background()
+	if _, err := m.Create(ctx, Options{Name: "box"}); err != nil {
+		t.Fatal(err)
+	}
+	vm, _ := st.Get("box")
+	now := time.Now()
+	m.mu.Lock()
+	m.activityLocked("box").idleSince = now.Add(-18 * time.Minute)
+	m.mu.Unlock()
+	if left, ok := m.autoStopRemaining(vm, now); !ok || left != 12*time.Minute {
+		t.Errorf("remaining = %s, %v, want 12m", left, ok)
+	}
+	if left, ok := m.autoStopRemaining(vm, now.Add(time.Hour)); !ok || left != 0 {
+		t.Errorf("remaining after the autostop time = %s, %v, want 0", left, ok)
+	}
+	release := m.Connected("box")
+	if _, ok := m.autoStopRemaining(vm, now); ok {
+		t.Error("counting down while connected")
+	}
+	release()
+
+	info, err := m.Stat(ctx, "box")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Running || info.AutoStopRemaining == nil || *info.AutoStopRemaining > state.DefaultAutoStop {
+		t.Errorf("Stat: running %v, remaining %v", info.Running, info.AutoStopRemaining)
+	}
+
+	if err := m.SetAutoStop("box", 0); err != nil {
+		t.Fatal(err)
+	}
+	vm, _ = st.Get("box")
+	if _, ok := m.autoStopRemaining(vm, now); ok {
+		t.Error("counting down with autostop 0")
+	}
+}
