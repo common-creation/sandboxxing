@@ -95,6 +95,8 @@ func (r *Runner) Run(ctx context.Context, argv []string, sess *IO) int {
 		return r.cmdResize(ctx, rest, sess)
 	case "edit":
 		return r.cmdEdit(ctx, rest, sess)
+	case "sync-config":
+		return r.cmdSyncConfig(ctx, rest, sess)
 	case "stat":
 		return r.cmdStat(ctx, rest, sess)
 	case "ssh":
@@ -188,6 +190,9 @@ Commands:
         change the resource limits (disk can only grow)
   edit <name> --autostop=DURATION [--json]
         change the autostop time of a MicroVM or EC2 instance (0 never stops it)
+  sync-config <name>... [--json]
+        apply the current guest settings to existing EC2 instances (starts
+        stopped ones)
   stat <name> [--range=24h|7d|30d] [--json]
         show container details and live resource usage
   ssh [-l user] [user@]name [command...]

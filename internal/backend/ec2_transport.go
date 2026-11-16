@@ -147,6 +147,23 @@ func (b *EC2) Run(ctx context.Context, vm *state.VM, e Exec) (int, error) {
 	return p.Wait()
 }
 
+// SyncConfig applies the current guest settings of the bootstrap to a running
+// instance, which received the settings of the version that launched it.
+func (b *EC2) SyncConfig(ctx context.Context, vm *state.VM) error {
+	var stderr bytes.Buffer
+	code, err := b.Run(ctx, vm, Exec{
+		Argv:   []string{"/bin/bash", "-c", ec2GuestConfig},
+		Stdout: io.Discard, Stderr: &stderr,
+	})
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("sync the guest settings of %s (exit %d): %s", vm.Name, code, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 func (b *EC2) Dial(ctx context.Context, vm *state.VM, port int) (net.Conn, error) {
 	client, err := b.transport.client(vm.Name)
 	if err != nil {

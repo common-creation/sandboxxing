@@ -335,6 +335,14 @@ func (r *Runner) cmdEdit(ctx context.Context, args []string, sess *IO) int {
 	return 0
 }
 
+// cmdSyncConfig applies the current guest settings to existing EC2 sandboxes.
+func (r *Runner) cmdSyncConfig(ctx context.Context, args []string, sess *IO) int {
+	return r.eachContainer(ctx, args, sess, "sync-config", "synced", func(name string, _ bool) error {
+		progress.From(ctx).Step("syncing the settings of %s %s", r.vms.Noun(name), name)
+		return r.vms.SyncConfig(ctx, name)
+	})
+}
+
 // parseAutoStop parses an --autostop value such as 30m or 2h. Zero keeps the
 // container running, and an empty value leaves the setting alone.
 func parseAutoStop(value string) (*time.Duration, error) {

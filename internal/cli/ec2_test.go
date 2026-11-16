@@ -51,6 +51,11 @@ func (b *ec2Control) RemoveForce(_ context.Context, _ *state.VM, force bool) err
 	return nil
 }
 func (b *ec2Control) StatusOf(context.Context, *state.VM) backend.Status { return backend.Status{} }
+func (b *ec2Control) Running(context.Context, *state.VM) bool            { return true }
+func (b *ec2Control) SyncConfig(_ context.Context, v *state.VM) error {
+	b.calls = append(b.calls, "sync-config "+v.Name)
+	return nil
+}
 
 func TestEC2ControlCommands(t *testing.T) {
 	dir := t.TempDir()
@@ -110,9 +115,12 @@ func TestEC2ControlCommands(t *testing.T) {
 	run(1, "start", "--force", "cloud")
 	run(0, "resize", "cloud", "--instance-type=m7i-flex.xlarge", "--disk=20G", "--json")
 	run(0, "restart", "cloud")
+	run(1, "sync-config")
+	run(1, "sync-config", "missing")
+	run(0, "sync-config", "cloud")
 	run(0, "stop", "--force", "cloud")
 	run(0, "rm", "cloud", "--force")
-	want := []string{"create m7i-flex.large", "create m7i-flex.large", "resize m7i-flex.xlarge", "restart", "force-stop", "force-rm"}
+	want := []string{"create m7i-flex.large", "create m7i-flex.large", "resize m7i-flex.xlarge", "restart", "sync-config cloud", "force-stop", "force-rm"}
 	if !reflect.DeepEqual(fake.calls, want) {
 		t.Errorf("calls %v, want %v", fake.calls, want)
 	}

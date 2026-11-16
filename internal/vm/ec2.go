@@ -17,6 +17,30 @@ type ec2Backend interface {
 	StopForce(context.Context, *state.VM, bool) error
 	RemoveForce(context.Context, *state.VM, bool) error
 	Resize(context.Context, *state.VM, int64, string) error
+	SyncConfig(context.Context, *state.VM) error
+}
+
+// SyncConfig applies the current guest settings to an EC2 sandbox, starting
+// it when needed. User data runs only on the first boot, so instances
+// launched by an older version otherwise keep their old settings.
+func (m *Manager) SyncConfig(ctx context.Context, name string) error {
+	v, ok := m.state.Get(name)
+	if !ok {
+		return fmt.Errorf("container %q not found", name)
+	}
+	if v.BackendName() != state.BackendEC2 {
+		return fmt.Errorf("sync-config is only available for EC2 sandboxes, %s uses the %s backend", name, v.BackendName())
+	}
+	if m.ec2 == nil {
+		return errors.New("the ec2 backend is not configured")
+	}
+	// The command keeps the sandbox from being stopped for inactivity.
+	defer m.Connected(name)()
+	v, _, err := m.started(ctx, name)
+	if err != nil {
+		return err
+	}
+	return m.ec2.SyncConfig(ctx, v)
 }
 
 func (m *Manager) EnableEC2(b ec2Backend) {
