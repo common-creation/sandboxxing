@@ -254,9 +254,9 @@ func (r *Runner) printList(sess *IO, infos []vm.Info, long bool) {
 		return
 	}
 	tw := newTable(sess.Out)
-	tw.header("NAME", "STATUS", "IMAGE", "SIZE", "IP", "SSH")
+	tw.header("NAME", "STATUS", "IMAGE", "SIZE", "AUTOSTOP", "REMAIN", "IP", "SSH")
 	for _, info := range infos {
-		tw.row(info.VM.Name, statusText(info), info.VM.Image, sizeText(info), info.IP, r.vmSSH(info.VM))
+		tw.row(info.VM.Name, statusText(info), info.VM.Image, sizeText(info), autoStopColumn(info), remainText(info), info.IP, r.vmSSH(info.VM))
 	}
 	tw.flush()
 	if long {
@@ -292,6 +292,37 @@ func sizeText(info vm.Info) string {
 	default:
 		return strconv.Itoa(v.CPU) + "cpu/" + sizeOrDash(v.Memory) + "/" + sizeOrDash(v.Disk)
 	}
+}
+
+// autoStopColumn renders the autostop time of a cloud sandbox for the
+// AUTOSTOP column, or "-" when it never stops or has no autostop.
+func autoStopColumn(info vm.Info) string {
+	v := info.VM
+	if v.BackendName() != state.BackendMicroVM && v.BackendName() != state.BackendEC2 {
+		return "-"
+	}
+	after := v.AutoStopAfter()
+	if after <= 0 {
+		return "-"
+	}
+	return autoStopText(after)
+}
+
+// remainText renders the time left until autostop for the REMAIN column,
+// rounded up to whole minutes, or "-" when no countdown runs.
+func remainText(info vm.Info) string {
+	if info.AutoStopRemaining == nil {
+		return "-"
+	}
+	d := *info.AutoStopRemaining
+	if d < 0 {
+		d = 0
+	}
+	d = (d + time.Minute - 1).Truncate(time.Minute)
+	if d == 0 {
+		return "0m"
+	}
+	return autoStopText(d)
 }
 
 func orDash(s string) string {

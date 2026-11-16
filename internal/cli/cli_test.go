@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/common-creation/sandboxxing/internal/config"
 	"github.com/common-creation/sandboxxing/internal/state"
@@ -192,6 +193,31 @@ func TestSizeText(t *testing.T) {
 	} {
 		if got := sizeText(tc.info); got != tc.want {
 			t.Errorf("%s: sizeText = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestAutoStopColumns(t *testing.T) {
+	hour := config.Duration(time.Hour)
+	never := config.Duration(0)
+	left := func(d time.Duration) *time.Duration { return &d }
+	for _, tc := range []struct {
+		name           string
+		info           vm.Info
+		autostop, left string
+	}{
+		{"nspawn", vm.Info{VM: &state.VM{}, Running: true}, "-", "-"},
+		{"microvm default", vm.Info{VM: &state.VM{Backend: state.BackendMicroVM}, Running: true, AutoStopRemaining: left(11*time.Minute + 30*time.Second)}, "30m", "12m"},
+		{"ec2 1h", vm.Info{VM: &state.VM{Backend: state.BackendEC2, AutoStop: &hour}, Running: true, AutoStopRemaining: left(90 * time.Minute)}, "1h", "1h30m"},
+		{"due", vm.Info{VM: &state.VM{Backend: state.BackendEC2}, Running: true, AutoStopRemaining: left(0)}, "30m", "0m"},
+		{"stopped", vm.Info{VM: &state.VM{Backend: state.BackendEC2}}, "30m", "-"},
+		{"never", vm.Info{VM: &state.VM{Backend: state.BackendMicroVM, AutoStop: &never}, Running: true}, "-", "-"},
+	} {
+		if got := autoStopColumn(tc.info); got != tc.autostop {
+			t.Errorf("%s: autoStopColumn = %q, want %q", tc.name, got, tc.autostop)
+		}
+		if got := remainText(tc.info); got != tc.left {
+			t.Errorf("%s: remainText = %q, want %q", tc.name, got, tc.left)
 		}
 	}
 }
