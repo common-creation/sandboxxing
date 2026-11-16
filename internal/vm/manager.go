@@ -429,6 +429,15 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 	return nil
 }
 
+// Noun is how messages to the client call the sandbox: an EC2 sandbox is a
+// whole instance rather than a container.
+func (m *Manager) Noun(name string) string {
+	if vm, ok := m.state.Get(name); ok && vm.BackendName() == state.BackendEC2 {
+		return "instance"
+	}
+	return "container"
+}
+
 // Stop powers a container off and closes its SSH connections, which would
 // otherwise start it again with their next port forward. It stays stopped
 // until it is started or logged into again.
@@ -464,12 +473,14 @@ func (m *Manager) StopForce(ctx context.Context, name string, force bool) error 
 		}
 	}
 	if force {
-		return m.ec2.StopForce(ctx, vm, true)
+		err = m.ec2.StopForce(ctx, vm, true)
+	} else {
+		err = b.Stop(ctx, vm)
 	}
-	if err := b.Stop(ctx, vm); err != nil {
+	if err != nil {
 		return err
 	}
-	m.log.Info("stopped container", "name", name)
+	m.log.Info("stopped "+m.Noun(name), "name", name, "force", force)
 	return nil
 }
 
@@ -671,7 +682,7 @@ func (m *Manager) StartIfStopped(ctx context.Context, name string) (bool, error)
 		return false, nil
 	}
 	m.log.Info("starting container on demand", "name", name)
-	progress.From(ctx).Step("container %s was stopped, starting it", name)
+	progress.From(ctx).Step("%s %s was stopped, starting it", m.Noun(name), name)
 	began := time.Now()
 	if err := b.Start(ctx, vm); err != nil {
 		// The error otherwise only reaches the client, which may already

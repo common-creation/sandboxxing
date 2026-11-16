@@ -138,14 +138,14 @@ func (r *Runner) cmdRemove(ctx context.Context, args []string, sess *IO) int {
 
 func (r *Runner) cmdStart(ctx context.Context, args []string, sess *IO) int {
 	return r.eachContainer(ctx, args, sess, "start", "started", func(name string, _ bool) error {
-		progress.From(ctx).Step("starting container %s", name)
+		progress.From(ctx).Step("starting %s %s", r.vms.Noun(name), name)
 		return r.vms.Start(ctx, name)
 	})
 }
 
 func (r *Runner) cmdStop(ctx context.Context, args []string, sess *IO) int {
 	return r.eachContainer(ctx, args, sess, "stop", "stopped", func(name string, force bool) error {
-		progress.From(ctx).Step("stopping container %s", name)
+		progress.From(ctx).Step("stopping %s %s", r.vms.Noun(name), name)
 		return r.vms.StopForce(ctx, name, force)
 	})
 }
