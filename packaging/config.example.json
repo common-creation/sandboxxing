@@ -31,6 +31,7 @@
   ],
   "pacstrap_timeout": "30m",
   "boot_timeout": "2m",
+  "default_backend": "nspawn",
   "default_cpu": 2,
   "default_memory": "2G",
   "default_disk": "10G",

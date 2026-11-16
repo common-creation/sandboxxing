@@ -117,7 +117,7 @@ type Config struct {
 	LogLevel string `json:"log_level"`
 
 	// DefaultBackend is the backend used by `new` when --backend is omitted:
-	// "nspawn" (the default) or "microvm".
+	// "nspawn" (the default), "microvm" or "ec2".
 	DefaultBackend string `json:"default_backend"`
 	// MicroVM enables the backend that runs containers as AWS Lambda
 	// MicroVMs. Nil disables it.
