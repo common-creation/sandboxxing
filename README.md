@@ -354,6 +354,17 @@ edit <name> --autostop=DURATION [--json]
 - Changes the autostop time of a MicroVM or EC2 sandbox, such as `--autostop=2h`. `0` never
   stops it. The new time applies to the current idle period.
 
+### `sync-config` — sync guest settings
+
+```
+sync-config <name>... [--json]
+```
+
+- Applies the guest settings of the current version (such as the systemd stop
+  timeouts) to EC2 sandboxes. User data applies them only on the first boot,
+  so use this to bring instances created by an older version up to date.
+- A stopped instance is started first. Running it again is harmless.
+
 ### `stat` — status and usage
 
 ```
