@@ -232,14 +232,19 @@ ls [-l] [--group=tag|type] [--json] [name|pattern]
 
 ```
 $ ssh sandbox ls
-NAME   STATUS   IMAGE   SIZE          IP           SSH
-demo   running  arch    2cpu/2G/10G   10.100.0.2   ssh demo@sandbox -p 2222
+NAME   STATUS   IMAGE   SIZE          AUTOSTOP  REMAIN  IP           SSH
+demo   running  arch    2cpu/2G/10G   -         -       10.100.0.2   ssh demo@sandbox -p 2222
 ```
 
 `SIZE` is CPU/memory/disk. An EC2 sandbox shows its instance type and disk
 (`m7i-flex.large/20G`) and its private IP address. A MicroVM shows the
 baseline memory of its image version with one vCPU per 2 GB, and no disk
 (`1cpu/2G/-`).
+
+`AUTOSTOP` is the autostop time of a MicroVM or EC2 sandbox, and `-` when it
+never stops or the backend has no autostop. `REMAIN` is the time left until
+it is stopped, rounded up to minutes; it shows `-` while the container is
+stopped or has an open SSH connection.
 
 ### `new` — create
 
