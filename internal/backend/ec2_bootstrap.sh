@@ -55,5 +55,13 @@ TimeoutStartSec=15min
 WantedBy=multi-user.target
 UNIT
 chmod 0644 /etc/systemd/system/sandboxxing-agent.service
+# Keep instance stops fast: units that ignore SIGTERM are killed after 10s
+# instead of the 90s default. daemon-reload re-reads system.conf.d.
+install -d -m 0755 /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/60-sandboxxing-timeout.conf <<'CONF'
+[Manager]
+DefaultTimeoutStopSec=10s
+CONF
+chmod 0644 /etc/systemd/system.conf.d/60-sandboxxing-timeout.conf
 systemctl daemon-reload
 systemctl enable --now --no-block sandboxxing-agent.service
