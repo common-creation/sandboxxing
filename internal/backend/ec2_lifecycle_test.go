@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/common-creation/sandboxxing/internal/agent"
 	"github.com/common-creation/sandboxxing/internal/config"
+	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
 )
 
@@ -330,5 +331,26 @@ func TestEC2RestartWhenOriginalGuestUnreachable(t *testing.T) {
 	after, _ := b.state.Get(vm.Name)
 	if after.EC2.Ready || !slices.Equal(wire.events, []string{"reboot"}) {
 		t.Fatalf("reboot readiness=%v calls=%v", after.EC2.Ready, wire.events)
+	}
+}
+
+func TestEC2StartReportsProgress(t *testing.T) {
+	b, wire, vm := ec2Fixture(t, "stopped")
+	var out strings.Builder
+	ctx := progress.With(t.Context(), progress.New(io.Discard, &out))
+	if err := b.Start(ctx, vm); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"start", "ready"}; !slices.Equal(wire.events, want) {
+		t.Fatalf("calls %v, want %v", wire.events, want)
+	}
+	want := strings.Join([]string{
+		"preparing the IAM role and shared directories of work",
+		"starting the EC2 instance i-own of work",
+		"the EC2 instance of work is running, connecting to its agent",
+		"connected to the agent of work",
+	}, "\n") + "\n"
+	if out.String() != want {
+		t.Fatalf("progress %q, want %q", out.String(), want)
 	}
 }

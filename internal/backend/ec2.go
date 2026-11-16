@@ -18,6 +18,7 @@ import (
 
 	"github.com/common-creation/sandboxxing/internal/agent"
 	"github.com/common-creation/sandboxxing/internal/config"
+	"github.com/common-creation/sandboxxing/internal/progress"
 	"github.com/common-creation/sandboxxing/internal/state"
 )
 
@@ -25,6 +26,7 @@ import (
 // the guest agent cannot be reached.
 type EC2 struct {
 	cfg            *config.EC2Config
+	log            *slog.Logger
 	state          *state.State
 	region         string
 	api            *ec2.Client
@@ -41,12 +43,12 @@ type ec2ProfileManager interface {
 	remove(context.Context, string) error
 }
 
-func NewEC2(_ context.Context, cfg *config.EC2Config, _ *slog.Logger, st *state.State, awsCfg aws.Config) *EC2 {
+func NewEC2(_ context.Context, cfg *config.EC2Config, log *slog.Logger, st *state.State, awsCfg aws.Config) *EC2 {
 	if cfg.Region != "" {
 		awsCfg.Region = cfg.Region
 	}
 	b := &EC2{
-		cfg: cfg, state: st, region: awsCfg.Region, poll: 3 * time.Second,
+		cfg: cfg, log: log, state: st, region: awsCfg.Region, poll: 3 * time.Second,
 		api:       ec2.NewFromConfig(awsCfg),
 		profiles:  newEC2Profiles(cfg, efs.NewFromConfig(awsCfg), iam.NewFromConfig(awsCfg)),
 		transport: newEC2Transport(awsCfg, cfg, st),
@@ -55,6 +57,15 @@ func NewEC2(_ context.Context, cfg *config.EC2Config, _ *slog.Logger, st *state.
 	b.growFileSystem = b.growRoot
 	b.bootIdentifier = b.bootID
 	return b
+}
+
+// logger returns the daemon log. A backend built without one, as in tests,
+// discards the records.
+func (b *EC2) logger() *slog.Logger {
+	if b.log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return b.log
 }
 
 func ec2ErrCode(err error, code string) bool {
@@ -342,9 +353,13 @@ func (b *EC2) Provision(ctx context.Context, vm *state.VM) error {
 }
 
 func (b *EC2) markReady(ctx context.Context, vm *state.VM, mounts []agent.ShareMount) error {
+	waited := time.Now()
 	if err := b.guestReady(ctx, vm, mounts); err != nil {
 		return err
 	}
+	b.logger().Info("EC2 guest agent is ready", "name", vm.Name, "instance", vm.EC2.InstanceID,
+		"elapsed", time.Since(waited).Round(time.Millisecond))
+	progress.From(ctx).Step("connected to the agent of %s", vm.Name)
 	if vm.EC2.GrowOnBoot {
 		if err := b.growFileSystem(ctx, vm); err != nil {
 			return err
@@ -358,22 +373,32 @@ func (b *EC2) startReady(ctx context.Context, vm *state.VM, mounts []agent.Share
 	if err != nil {
 		return err
 	}
+	log := b.logger().With("name", vm.Name, "instance", vm.EC2.InstanceID)
 	if instanceState(i) == types.InstanceStateNameStopping {
+		log.Info("waiting for the EC2 instance to finish stopping before starting it")
+		progress.From(ctx).Step("waiting for the EC2 instance of %s to finish stopping", vm.Name)
 		i, err = b.waitState(ctx, vm.EC2, types.InstanceStateNameStopped)
 		if err != nil {
 			return err
 		}
 	}
+	started := time.Now()
 	if instanceState(i) == types.InstanceStateNameStopped {
+		log.Info("starting the EC2 instance")
+		progress.From(ctx).Step("starting the EC2 instance %s of %s", vm.EC2.InstanceID, vm.Name)
 		_, err = b.api.StartInstances(ctx, &ec2.StartInstancesInput{InstanceIds: []string{vm.EC2.InstanceID}})
 		if err != nil {
 			return err
 		}
+	} else {
+		log.Info("waiting for the EC2 instance to run", "state", instanceState(i))
 	}
 	i, err = b.waitState(ctx, vm.EC2, types.InstanceStateNameRunning)
 	if err != nil {
 		return err
 	}
+	log.Info("EC2 instance is running, waiting for its guest agent", "elapsed", time.Since(started).Round(time.Millisecond))
+	progress.From(ctx).Step("the EC2 instance of %s is running, connecting to its agent", vm.Name)
 	if err := b.recordInstance(vm, i); err != nil {
 		return err
 	}
@@ -390,7 +415,9 @@ func (b *EC2) Start(ctx context.Context, vm *state.VM) error {
 	if vm.EC2.InstanceID == "" {
 		return b.Provision(ctx, vm)
 	}
+	log := b.logger().With("name", vm.Name, "instance", vm.EC2.InstanceID)
 	if pending := vm.EC2.PendingResize; pending != nil {
+		log.Info("applying the pending resize of the EC2 sandbox before starting it")
 		if err := b.Resize(ctx, vm, pending.Disk, pending.InstanceType); err != nil {
 			return err
 		}
@@ -399,10 +426,15 @@ func (b *EC2) Start(ctx context.Context, vm *state.VM) error {
 			return nil
 		}
 	}
+	log.Info("preparing the instance profile and shared directories of the EC2 sandbox")
+	progress.From(ctx).Step("preparing the IAM role and shared directories of %s", vm.Name)
+	prepared := time.Now()
 	_, mounts, err := b.profiles.ensure(ctx, vm, vm.EC2.ClientToken)
 	if err != nil {
 		return err
 	}
+	log.Info("prepared the instance profile and shared directories of the EC2 sandbox",
+		"elapsed", time.Since(prepared).Round(time.Millisecond))
 	return b.startReady(ctx, vm, mounts)
 }
 
