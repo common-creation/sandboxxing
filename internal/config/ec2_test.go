@@ -12,7 +12,7 @@ func TestEC2ConfigDefaultsAndShareGrants(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if c.EC2.DefaultImage != DefaultEC2Image || c.EC2.StartTimeout.Duration() != 10*time.Minute {
+	if c.EC2.DefaultImage != DefaultEC2Image || c.EC2.StartTimeout.Duration() != 10*time.Minute || c.EC2.DefaultInstanceType != DefaultEC2InstanceType {
 		t.Fatalf("missing defaults %+v", c.EC2)
 	}
 	ro := Share{Path: "/source", Target: "/data", ReadOnly: true}

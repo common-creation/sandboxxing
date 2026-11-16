@@ -26,6 +26,9 @@ type EC2Config struct {
 	StartTimeout        Duration          `json:"start_timeout"`
 	DefaultImage        string            `json:"default_image"`
 	Images              map[string]string `json:"images"`
+	// DefaultInstanceType is the instance type used when `new` names none.
+	// It defaults to DefaultEC2InstanceType.
+	DefaultInstanceType string `json:"default_instance_type"`
 	// AssociatePublicIP gives sandboxes public IPv4 addresses for outbound
 	// traffic in subnets without NAT, such as those of the default VPC.
 	AssociatePublicIP bool `json:"associate_public_ip_address"`
@@ -87,6 +90,9 @@ func (c *EC2Config) validate() error {
 	}
 	if c.StartTimeout <= 0 {
 		c.StartTimeout = Duration(10 * time.Minute)
+	}
+	if c.DefaultInstanceType == "" {
+		c.DefaultInstanceType = DefaultEC2InstanceType
 	}
 	for alias, id := range c.Images {
 		if alias == "" || !strings.HasPrefix(id, "ami-") {

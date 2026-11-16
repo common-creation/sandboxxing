@@ -52,7 +52,7 @@ func (m *Manager) createEC2(ctx context.Context, opts Options) (*state.VM, error
 		return nil, fmt.Errorf("unknown EC2 image %q", opts.Image)
 	}
 	if opts.InstanceType == "" {
-		opts.InstanceType = config.DefaultEC2InstanceType
+		opts.InstanceType = cfg.DefaultInstanceType
 	}
 	after := config.Duration(state.DefaultAutoStop)
 	if opts.AutoStop != nil {
