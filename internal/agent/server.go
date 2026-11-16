@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -303,8 +305,12 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "the instance is not configured yet", http.StatusServiceUnavailable)
 			return
 		}
-		got := r.Header.Get(SecretHeader)
-		if subtle.ConstantTimeCompare([]byte(got), []byte(cfg.Secret)) != 1 {
+		got, want := r.Header.Get(SecretHeader), cfg.Secret
+		if cfg.SecretSHA256 != "" {
+			digest := sha256.Sum256([]byte(got))
+			got, want = hex.EncodeToString(digest[:]), cfg.SecretSHA256
+		}
+		if want == "" || subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}

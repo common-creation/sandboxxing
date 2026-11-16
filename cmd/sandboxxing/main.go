@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -226,13 +225,6 @@ func runChecks(cfg *config.Config, log *slog.Logger, st *state.State) error {
 	}
 	if cfg.EC2 != nil {
 		cloudChecks = append(cloudChecks, awsCheck(ctx, "ec2", cfg.EC2.Region))
-		for _, tool := range []string{"aws", "session-manager-plugin"} {
-			path, err := exec.LookPath(tool)
-			if err != nil {
-				path = err.Error()
-			}
-			cloudChecks = append(cloudChecks, hostCheck{Name: tool, OK: err == nil, Detail: path})
-		}
 	}
 	for _, c := range cloudChecks {
 		result := "ok"

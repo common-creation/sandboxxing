@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +32,7 @@ const (
 	PathBootID = "/v1/boot-id"
 )
 
-// EC2Handler serves the data protocol over an SSM tunnel. The last desired
+// EC2Handler serves the data protocol to the daemon inside the VPC. The last desired
 // mounts survive reboot on EBS. The mount journal in /run survives a service
 // restart and is automatically cleared when the kernel loses its mounts.
 func (s *Server) EC2Handler(ctx context.Context, configPath, journalPath string) (http.Handler, error) {
@@ -40,7 +41,7 @@ func (s *Server) EC2Handler(ctx context.Context, configPath, journalPath string)
 		return nil, err
 	}
 	var cfg RunConfig
-	if err := json.Unmarshal(raw, &cfg); err != nil || cfg.Secret == "" {
+	if err := json.Unmarshal(raw, &cfg); err != nil || len(cfg.SecretSHA256) != sha256.Size*2 {
 		return nil, errors.New("invalid EC2 agent configuration")
 	}
 	if cfg.Name != "" {

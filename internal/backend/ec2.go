@@ -127,6 +127,9 @@ func (b *EC2) recordInstance(vm *state.VM, instance *types.Instance) error {
 	return b.state.UpdateEC2(vm.Name, func(v *state.VM) {
 		v.EC2.InstanceID = aws.ToString(instance.InstanceId)
 		v.EC2.LaunchPending = false
+		if ip := aws.ToString(instance.PrivateIpAddress); ip != "" {
+			v.EC2.PrivateIP = ip
+		}
 		if instance.InstanceType != "" {
 			v.EC2.InstanceType = string(instance.InstanceType)
 		}

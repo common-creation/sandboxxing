@@ -32,7 +32,7 @@ func run() error {
 	var (
 		dataAddr  = fs.String("data-addr", ":"+strconv.Itoa(agent.DataPort), "listen address for the daemon")
 		hookAddr  = fs.String("hook-addr", ":"+strconv.Itoa(agent.HookPort), "listen address for the lifecycle hooks")
-		ec2Config = fs.String("ec2-config", "", "serve the EC2 data protocol on loopback with this configuration")
+		ec2Config = fs.String("ec2-config", "", "serve the EC2 data protocol with this configuration")
 	)
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
@@ -50,7 +50,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		servers = append(servers, &http.Server{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(agent.DataPort)), Handler: handler, ReadHeaderTimeout: 10 * time.Second})
+		servers = append(servers, &http.Server{Addr: *dataAddr, Handler: handler, ReadHeaderTimeout: 10 * time.Second})
 	} else {
 		servers = append(servers,
 			&http.Server{Addr: *hookAddr, Handler: srv.HookHandler(), ReadHeaderTimeout: 10 * time.Second},

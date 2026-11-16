@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -89,6 +90,9 @@ func TestEC2GuestProfileShares(t *testing.T) {
 		}
 		if err := json.Unmarshal([]byte(f.Policies[name]), &policy); err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(f.Policies[name], "ssm") {
+			t.Fatalf("guest policy registers with Systems Manager: %s", f.Policies[name])
 		}
 		var mountStatements int
 		for _, stmt := range policy.Statement {

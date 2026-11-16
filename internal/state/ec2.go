@@ -13,6 +13,7 @@ type EC2 struct {
 	ClientToken   string     `json:"client_token"`
 	Secret        string     `json:"secret,omitempty"`
 	InstanceID    string     `json:"instance_id,omitempty"`
+	PrivateIP     string     `json:"private_ip,omitempty"`
 	RootVolumeID  string     `json:"root_volume_id,omitempty"`
 	ImageID       string     `json:"image_id,omitempty"`
 	InstanceType  string     `json:"instance_type"`

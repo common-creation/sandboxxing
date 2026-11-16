@@ -1,17 +1,19 @@
 package backend
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"fmt"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -22,107 +24,68 @@ import (
 	"github.com/common-creation/sandboxxing/internal/state"
 )
 
-func TestSSMBanner(t *testing.T) {
-	payload := "HTTP/1.1 101 Switching Protocols\r\n\r\n\x00\xff"
-	r := bufio.NewReader(strings.NewReader("\nStarting session with SessionId: user-abcd\n" + payload))
-	id, err := readSSMBanner(r)
-	if id != "user-abcd" || err != nil {
-		t.Fatalf("read banner: %q, %v", id, err)
-	}
-	data, err := io.ReadAll(r)
-	if err != nil || string(data) != payload {
-		t.Fatalf("protocol payload %q, %v", data, err)
-	}
-	for _, bad := range []string{"", "error\n", "\nStarting session with SessionId: \n", strings.Repeat("z", 8192)} {
-		if _, err := readSSMBanner(bufio.NewReader(strings.NewReader(bad))); err == nil {
-			t.Fatal("bad plugin banner accepted")
-		}
-	}
-}
-
-// The subprocess models the plugin's stdio connection to a running guest.
-// This exercises the actual HTTP and WebSocket upgrades without AWS or a
-// TCP listener on the host.
-func TestSSMGuestProcess(t *testing.T) {
-	configPath := os.Getenv("SBX_TEST_AGENT_CONFIG")
-	if configPath == "" || os.Getenv("SBX_TEST_PLUGIN_CHILD") == "" {
-		return
-	}
-	h, err := agent.NewServer(slog.Default()).EC2Handler(context.Background(), configPath, configPath+".journal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, agent.PathPing, nil)
-	req.Header.Set(agent.SecretHeader, "shared")
-	for {
-		result := httptest.NewRecorder()
-		h.ServeHTTP(result, req)
-		if result.Code == http.StatusOK {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	c, err := net.FileConn(os.Stdin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fmt.Fprint(os.Stdout, "\nStarting session with SessionId: fake-session-id\n")
-	srv := &http.Server{Handler: h}
-	_ = srv.Serve(&pluginListener{Conn: c, accepted: false})
-}
-
-type pluginListener struct {
-	net.Conn
-	accepted bool
-}
-
-func (l *pluginListener) Accept() (net.Conn, error) {
-	if l.accepted {
-		// The plugin is killed when its caller closes the tunnel.
-		select {}
-	}
-	l.accepted = true
-	return l.Conn, nil
-}
-func (l *pluginListener) Addr() net.Addr { return l.LocalAddr() }
-
-func TestEC2SSMGuestRoundTrip(t *testing.T) {
+// The guest is started from the configuration the daemon puts in user data,
+// so the digest sent to EC2 must admit the secret the daemon keeps.
+func TestEC2GuestRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SBX_TEST_EXE", exe)
-	t.Setenv("SBX_TEST_AGENT_CONFIG", filepath.Join(dir, "guest.json"))
-	t.Setenv("SBX_TEST_TERMINATED", filepath.Join(dir, "terminated"))
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	const fakeAWS = `#!/bin/sh
-case "$*" in
-  "--region us-east-1 ssm start-session --target i-test --document-name AWS-StartSSHSession --parameters portNumber=8080")
-    export SBX_TEST_PLUGIN_CHILD=1
-    exec "$SBX_TEST_EXE" -test.run '^TestSSMGuestProcess$' ;;
-  "--region us-east-1 ssm terminate-session --session-id fake-session-id")
-    touch "$SBX_TEST_TERMINATED" ;;
-  *) exit 1 ;;
-esac
-`
-	if err := os.WriteFile(filepath.Join(dir, "aws"), []byte(fakeAWS), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(os.Getenv("SBX_TEST_AGENT_CONFIG"), []byte(`{"secret":"shared","env":["GUEST=yes"]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	st, err := state.Open(filepath.Join(dir, "state.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	vm := &state.VM{Name: "ec2test", Backend: state.BackendEC2, EC2: &state.EC2{InstanceID: "i-test", Secret: "shared"}}
+	vm := &state.VM{Name: "ec2test", Backend: state.BackendEC2, Env: map[string]string{"GUEST": "yes"},
+		EC2: &state.EC2{InstanceID: "i-test", Secret: "shared"}}
 	if err := st.Add(vm); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	b := &EC2{transport: newEC2Transport(aws.Config{Region: "us-east-1"}, &config.EC2Config{StartTimeout: config.Duration(10 * time.Second)}, st)}
+	if _, err := b.transport.client(vm.Name); err == nil || !strings.Contains(err.Error(), "recreated") {
+		t.Fatalf("sandbox without a private address: %v", err)
+	}
+	if err := st.UpdateEC2(vm.Name, func(v *state.VM) { v.EC2.PrivateIP = "10.0.0.5" }); err != nil {
+		t.Fatal(err)
+	}
+
+	script, err := b.userData(ctx, vm, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := regexp.MustCompile(`echo '([^']+)' \| base64 -d > /etc/sandboxxing/agent\.json`).FindSubmatch(script)
+	if encoded == nil {
+		t.Fatal("user data does not write the agent configuration")
+	}
+	guest, err := base64.StdEncoding.DecodeString(string(encoded[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent agent.RunConfig
+	digest := sha256.Sum256([]byte("shared"))
+	if err := json.Unmarshal(guest, &sent); err != nil || sent.Secret != "" || sent.SecretSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("user data must carry only the digest of the secret: %s, %v", guest, err)
+	}
+	configPath := filepath.Join(dir, "guest.json")
+	if err := os.WriteFile(configPath, guest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := agent.NewServer(slog.Default()).EC2Handler(ctx, configPath, configPath+".journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: h}
+	go func() { _ = srv.Serve(listener) }()
+	defer srv.Close()
+	b.transport.dial = func(ctx context.Context, addr string) (net.Conn, error) {
+		if addr != "10.0.0.5:8080" {
+			t.Errorf("dialled %q", addr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", listener.Addr().String())
+	}
+
 	if err := b.waitAgent(ctx, vm, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -159,16 +122,13 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.Header = func(context.Context) (http.Header, error) { return http.Header{}, nil }
-	if err := client.Ping(ctx); err == nil || !strings.Contains(err.Error(), "403") {
-		t.Fatalf("expected forbidden: %v", err)
-	}
-	for {
-		if _, err := os.Stat(os.Getenv("SBX_TEST_TERMINATED")); err == nil {
-			break
+	// The digest is public: presenting it instead of the secret must fail.
+	for _, wrong := range []string{"", sent.SecretSHA256} {
+		client.Header = func(context.Context) (http.Header, error) {
+			return http.Header{agent.SecretHeader: {wrong}}, nil
 		}
-		if err := sleep(ctx, time.Millisecond); err != nil {
-			t.Fatal("plugin sessions were not released")
+		if err := client.Ping(ctx); err == nil || !strings.Contains(err.Error(), "403") {
+			t.Fatalf("expected forbidden for %q: %v", wrong, err)
 		}
 	}
 }

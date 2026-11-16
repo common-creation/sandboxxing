@@ -66,7 +66,7 @@ func (f *ec2Requests) Do(r *http.Request) (*http.Response, error) {
 			if f.power == "" {
 				break
 			}
-			body = fmt.Sprintf("<reservationSet><item><instancesSet><item><instanceId>i-own</instanceId><clientToken>%s</clientToken><instanceType>%s</instanceType><instanceState><name>%s</name></instanceState><rootDeviceName>/dev/sda1</rootDeviceName><blockDeviceMapping><item><deviceName>/dev/sda1</deviceName><ebs><volumeId>vol-own</volumeId></ebs></item></blockDeviceMapping></item></instancesSet></item></reservationSet>", f.token, f.kind, f.power)
+			body = fmt.Sprintf("<reservationSet><item><instancesSet><item><instanceId>i-own</instanceId><privateIpAddress>10.0.0.5</privateIpAddress><clientToken>%s</clientToken><instanceType>%s</instanceType><instanceState><name>%s</name></instanceState><rootDeviceName>/dev/sda1</rootDeviceName><blockDeviceMapping><item><deviceName>/dev/sda1</deviceName><ebs><volumeId>vol-own</volumeId></ebs></item></blockDeviceMapping></item></instancesSet></item></reservationSet>", f.token, f.kind, f.power)
 		case "DescribeVolumes":
 			body = fmt.Sprintf("<volumeSet><item><volumeId>vol-own</volumeId><size>%d</size></item></volumeSet>", f.size)
 		case "DescribeVolumesModifications":
@@ -254,7 +254,7 @@ func TestEC2ProvisionDiscoversAcceptedLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	vm, _ = b.state.Get(vm.Name)
-	if vm.EC2.InstanceID != "i-own" || vm.EC2.RootVolumeID != "vol-own" || vm.EC2.Region != b.region || vm.Disk != 8<<30 || !vm.EC2.Ready {
+	if vm.EC2.InstanceID != "i-own" || vm.EC2.PrivateIP != "10.0.0.5" || vm.EC2.RootVolumeID != "vol-own" || vm.EC2.Region != b.region || vm.Disk != 8<<30 || !vm.EC2.Ready {
 		t.Fatalf("launch state %+v", vm)
 	}
 	// Simulate an interrupted initial launch with only its token persisted.

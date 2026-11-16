@@ -11,6 +11,8 @@ cat > /usr/local/sbin/sandboxxing-install-agent <<'INSTALL'
 set -eu
 if [ -f /etc/sandboxxing/installed ]; then exit 0; fi
 export DEBIAN_FRONTEND=noninteractive
+# The instance role has no Session Manager permissions; drop the idle agent.
+snap remove --purge amazon-ssm-agent || true
 apt-get -o Acquire::Retries=3 update
 apt-get -o DPkg::Lock::Timeout=180 install -y python3-boto3 openssh-sftp-server cloud-guest-utils e2fsprogs
 work=$(mktemp -d)

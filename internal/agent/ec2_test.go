@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +16,8 @@ import (
 func TestEC2RebootWithRevokedShare(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "agent.json")
-	initial := `{"secret":"instance-only","fs":"fs-test","shares":[{"ap":"fsap-gone","target":"/shared/old"}]}`
+	digest := sha256.Sum256([]byte("instance-only"))
+	initial := `{"secret_sha256":"` + hex.EncodeToString(digest[:]) + `","fs":"fs-test","shares":[{"ap":"fsap-gone","target":"/shared/old"}]}`
 	if err := os.WriteFile(cfg, []byte(initial), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +40,10 @@ func TestEC2RebootWithRevokedShare(t *testing.T) {
 	if r := send("GET", PathPing, "", "instance-only"); r.Code != http.StatusServiceUnavailable {
 		t.Fatalf("guest accepted login before mounts: %d", r.Code)
 	}
-	if r := send("GET", PathBootID, "", "wrong"); r.Code != http.StatusForbidden {
-		t.Fatalf("unprotected boot ID: %d", r.Code)
+	for _, wrong := range []string{"wrong", "", hex.EncodeToString(digest[:])} {
+		if r := send("GET", PathBootID, "", wrong); r.Code != http.StatusForbidden {
+			t.Fatalf("unprotected boot ID for %q: %d", wrong, r.Code)
+		}
 	}
 	if r := send("GET", PathBootID, "", "instance-only"); r.Code != http.StatusOK || len(strings.TrimSpace(r.Body.String())) != 36 {
 		t.Fatalf("boot ID: %d %q", r.Code, r.Body.String())

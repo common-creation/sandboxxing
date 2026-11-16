@@ -111,6 +111,9 @@ type RunConfig struct {
 	Name string `json:"name"`
 	// Secret authenticates the daemon on the data port.
 	Secret string `json:"secret"`
+	// SecretSHA256 is the hex SHA-256 digest of the secret. It replaces Secret
+	// where the configuration is readable outside the instance (EC2 user data).
+	SecretSHA256 string `json:"secret_sha256,omitempty"`
 	// Env is the environment of the instance.
 	Env []string `json:"env,omitempty"`
 	// FileSystemID and AccessPointID select the EFS access point that holds

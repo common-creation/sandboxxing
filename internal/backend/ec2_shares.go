@@ -154,15 +154,6 @@ func (p *ec2Profiles) policy(grants []shareGrant) (string, error) {
 		objects = append(objects, "arn:"+partition+":s3:::"+object)
 	}
 	statements := []map[string]any{
-		{
-			"Effect": "Allow",
-			"Action": []string{
-				"ssm:UpdateInstanceInformation",
-				"ssmmessages:CreateControlChannel", "ssmmessages:OpenControlChannel",
-				"ssmmessages:CreateDataChannel", "ssmmessages:OpenDataChannel",
-			},
-			"Resource": "*",
-		},
 		{"Effect": "Allow", "Action": "s3:GetObject", "Resource": objects},
 	}
 	if len(grants) > 0 {

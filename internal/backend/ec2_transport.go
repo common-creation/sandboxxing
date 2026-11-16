@@ -3,8 +3,10 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,11 +27,17 @@ type ec2Transport struct {
 	region string
 	cfg    *config.EC2Config
 	state  *state.State
-	dial   func(context.Context, string, string) (net.Conn, error)
+	dial   func(context.Context, string) (net.Conn, error)
+}
+
+// dialVPC reaches the guest agent on its private address. The daemon must be
+// inside the VPC or routed to it; the guest security group admits nothing else.
+func dialVPC(ctx context.Context, addr string) (net.Conn, error) {
+	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", addr)
 }
 
 func newEC2Transport(cloud aws.Config, cfg *config.EC2Config, st *state.State) *ec2Transport {
-	return &ec2Transport{region: cloud.Region, cfg: cfg, state: st, dial: dialSSM}
+	return &ec2Transport{region: cloud.Region, cfg: cfg, state: st, dial: dialVPC}
 }
 
 func (t *ec2Transport) client(name string) (*agent.Client, error) {
@@ -43,18 +51,21 @@ func (t *ec2Transport) client(name string) (*agent.Client, error) {
 	if instance.FileSystemID != "" && instance.FileSystemID != t.cfg.FileSystemID {
 		return nil, fmt.Errorf("configured EFS file system differs from that of EC2 sandbox %s", name)
 	}
+	if instance.PrivateIP == "" {
+		return nil, fmt.Errorf("EC2 sandbox %s has no recorded private address: sandboxes created before the removal of Session Manager must be recreated", name)
+	}
+	addr := net.JoinHostPort(instance.PrivateIP, strconv.Itoa(agent.DataPort))
 	return &agent.Client{
-		BaseURL: "http://127.0.0.1:" + strconv.Itoa(agent.DataPort),
+		BaseURL: "http://" + addr,
 		Header: func(context.Context) (http.Header, error) {
 			return http.Header{agent.SecretHeader: {instance.Secret}}, nil
 		},
 		HTTPClient: &http.Client{Transport: &http.Transport{
-			// Each HTTP/WebSocket connection owns an SSM session. Closing
-			// plain requests immediately releases their session as well.
+			// A connection must not outlive a stop or reboot of the guest.
 			DisableKeepAlives:     true,
 			ResponseHeaderTimeout: 90 * time.Second,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return t.dial(ctx, t.region, instance.InstanceID)
+				return t.dial(ctx, addr)
 			},
 		}},
 	}, nil
@@ -69,8 +80,10 @@ func (b *EC2) userData(_ context.Context, vm *state.VM, mounts []agent.ShareMoun
 		return nil, errors.New("missing EC2 agent secret")
 	}
 	cfg := b.transport.cfg
+	// User data is readable through the EC2 API, so it carries only a digest.
+	digest := sha256.Sum256([]byte(instance.Secret))
 	guest, err := json.Marshal(agent.RunConfig{
-		Name: vm.Name, Secret: instance.Secret, Env: envList(vm.Env), FileSystemID: cfg.FileSystemID, Shares: mounts,
+		Name: vm.Name, SecretSHA256: hex.EncodeToString(digest[:]), Env: envList(vm.Env), FileSystemID: cfg.FileSystemID, Shares: mounts,
 	})
 	if err != nil {
 		return nil, err
