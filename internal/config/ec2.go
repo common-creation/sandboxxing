@@ -45,7 +45,7 @@ func (c *EC2Config) CheckShare(s Share) error {
 		return errors.New("EC2 share cannot cover the home directory")
 	}
 	target := s.MountTarget()
-	for _, reserved := range []string{"/etc/sandboxxing", "/run/sandboxxing-agent-mounts.json"} {
+	for _, reserved := range []string{"/etc/sandboxxing", "/run/sandboxxing-agent-mounts.json", "/run/sandboxxing-startup.done"} {
 		if target == reserved || strings.HasPrefix(reserved, target+"/") || strings.HasPrefix(target, reserved+"/") {
 			return fmt.Errorf("EC2 share target %s overlaps the agent configuration or mount journal", target)
 		}

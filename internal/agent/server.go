@@ -35,6 +35,10 @@ type Server struct {
 	Home HomeMounter
 	// StartupLog receives the output of the startup script.
 	StartupLog string
+	// StartupMarker records that an EC2 instance ran the startup script in
+	// the current boot. It lives on a tmpfs, so a reboot clears it while a
+	// restart of the agent keeps it.
+	StartupMarker string
 
 	mu sync.Mutex
 	// cfg is the instance configuration received by the run hook. The data
@@ -60,11 +64,12 @@ type HomeMounter interface {
 // NewServer creates the agent.
 func NewServer(log *slog.Logger) *Server {
 	return &Server{
-		log:         log,
-		Home:        EFSMounter{},
-		StartupLog:  "/var/log/sandboxxing-startup.log",
-		subscribers: map[chan Control]struct{}{},
-		groups:      map[int]struct{}{},
+		log:           log,
+		Home:          EFSMounter{},
+		StartupLog:    "/var/log/sandboxxing-startup.log",
+		StartupMarker: "/run/sandboxxing-startup.done",
+		subscribers:   map[chan Control]struct{}{},
+		groups:        map[int]struct{}{},
 	}
 }
 
@@ -183,6 +188,21 @@ func (s *Server) runStartup(cfg *RunConfig) {
 	}
 	fmt.Fprintf(out, "%s: %s exited with status %d\n", time.Now().Format(time.RFC3339), script, code)
 	s.log.Info("the startup script finished", "code", code)
+}
+
+// startupOncePerBoot starts the startup script on an EC2 instance unless it
+// already ran in the current boot. The marker is created before the script
+// starts, so a restart of the agent does not run it a second time.
+func (s *Server) startupOncePerBoot(cfg *RunConfig) {
+	f, err := os.OpenFile(s.StartupMarker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			s.log.Warn("create the marker of the startup script", "err", err)
+		}
+		return
+	}
+	f.Close()
+	go s.runStartup(cfg)
 }
 
 // hookResume makes sure that the home directory survived the suspension. An

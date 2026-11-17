@@ -51,7 +51,11 @@ func (s *Server) EC2Handler(ctx context.Context, configPath, journalPath string)
 	}
 	s.cfg = &cfg
 	initial := EC2Shares{cfg.FileSystemID, cfg.Shares}
-	mounts := &ec2Mounts{desiredPath: filepath.Join(filepath.Dir(configPath), "shares.json"), journalPath: journalPath}
+	mounts := &ec2Mounts{desiredPath: filepath.Join(filepath.Dir(configPath), "shares.json"), journalPath: journalPath,
+		// The startup script may use the shares, so it waits for the first
+		// successful mount of this boot, which a revoked share can delay
+		// until the daemon sends the new set.
+		onReady: func() { s.startupOncePerBoot(&cfg) }}
 	// Keep the management endpoint accessible when the old shares can no
 	// longer be mounted (e.g. a share was revoked while stopped).
 	mounts.mu.Lock()
@@ -91,6 +95,8 @@ type ec2Mounts struct {
 	ready       atomic.Bool
 	desiredPath string
 	journalPath string
+	// onReady is called with mu held after the desired mounts were applied.
+	onReady func()
 }
 
 func (m *ec2Mounts) restore(ctx context.Context, initial EC2Shares) error {
@@ -199,6 +205,9 @@ func (m *ec2Mounts) apply(ctx context.Context, desired EC2Shares) error {
 		return err
 	}
 	m.ready.Store(true)
+	if m.onReady != nil {
+		m.onReady()
+	}
 	return nil
 }
 

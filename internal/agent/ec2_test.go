@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEC2RebootWithRevokedShare(t *testing.T) {
@@ -26,7 +27,10 @@ func TestEC2RebootWithRevokedShare(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "shares.json"), []byte("truncated"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewServer(slog.Default()).EC2Handler(t.Context(), cfg, filepath.Join(dir, "mounts"))
+	srv := NewServer(slog.Default())
+	srv.StartupLog = filepath.Join(dir, "startup.log")
+	srv.StartupMarker = filepath.Join(dir, "startup.done")
+	h, err := srv.EC2Handler(t.Context(), cfg, filepath.Join(dir, "mounts"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +64,73 @@ func TestEC2RebootWithRevokedShare(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(dir, "shares.json")); err != nil || string(b) != "{}" {
 		t.Fatalf("expected empty share list, got %q, %v", b, err)
 	}
+}
+
+// An EC2 instance runs the startup script once per boot after its shares are
+// mounted. A restart of the agent in the same boot does not run it again.
+func TestEC2StartupScript(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, filepath.Dir(StartupScript)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho \"$SBX_TEST $HOME\" >> \"$HOME/ran\"\n"
+	if err := os.WriteFile(filepath.Join(home, StartupScript), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(dir, "agent.json")
+	digest := sha256.Sum256([]byte("instance-only"))
+	raw := `{"secret_sha256":"` + hex.EncodeToString(digest[:]) + `","home":"` + home + `","env":["SBX_TEST=ec2"]}`
+	if err := os.WriteFile(cfg, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "startup.done")
+	log := filepath.Join(dir, "startup.log")
+	start := func() {
+		srv := NewServer(slog.Default())
+		srv.StartupLog = log
+		srv.StartupMarker = marker
+		if _, err := srv.EC2Handler(t.Context(), cfg, filepath.Join(dir, "mounts")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitRuns := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			b, _ := os.ReadFile(log)
+			if strings.Contains(string(b), "exited with status 0") {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the startup script did not finish:\n%s", b)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		b, err := os.ReadFile(filepath.Join(home, "ran"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(b), "ec2 "+home+"\n"); got != want {
+			t.Fatalf("the startup script ran %d times, want %d:\n%s", got, want, b)
+		}
+	}
+
+	start()
+	waitRuns(1)
+	// The agent restarts in the same boot: the marker survives.
+	start()
+	time.Sleep(500 * time.Millisecond)
+	waitRuns(1)
+	// A reboot clears the marker on the tmpfs.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	start()
+	waitRuns(2)
 }
 
 // The command doubles record both the mount table and the EFS options.

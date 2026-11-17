@@ -23,7 +23,7 @@ func TestEC2ConfigDefaultsAndShareGrants(t *testing.T) {
 	if err := c.EC2.CheckShares([]Share{{Path: "/source", Target: "/root"}}); err == nil {
 		t.Fatal("accepted share over home")
 	}
-	for _, target := range []string{"/etc/sandboxxing", "/etc/sandboxxing/assets", "/run", "/run/sandboxxing-agent-mounts.json"} {
+	for _, target := range []string{"/etc/sandboxxing", "/etc/sandboxxing/assets", "/run", "/run/sandboxxing-agent-mounts.json", "/run/sandboxxing-startup.done"} {
 		if err := c.EC2.CheckShare(Share{Path: "/tools", Target: target}); err == nil {
 			t.Errorf("accepted target %s over agent state", target)
 		}
