@@ -685,6 +685,8 @@ Set `default_backend` to `ec2` to use EC2 without a flag. `new --instance-type` 
 
 **Shared directories.** Set `ec2.shares` for every EC2 sandbox or repeat `new --share=PATH[:TARGET][:ro]` for one sandbox. The default target is `/shared/<basename>`; a per-sandbox share overrides the default at the same target. For example, `--share=/tools:/opt/tools:ro` grants read-only access through the instance's IAM role. The guest mounts the shares before accepting sessions. Changes to the configured defaults take effect on the next boot. Sandboxes using the same source path on this EFS see the same files. The MicroVM backend uses its own file system.
 
+**Startup script.** If `/root/.config/sandboxxing/startup` exists, it runs once per boot of the OS, after the shares are mounted. It runs again after every start following a stop or autostop and after every restart, so write it to be safe to run repeatedly. A restart of the agent does not run it. It runs and logs as described in the [startup script](#startup-script) section of the MicroVM backend.
+
 Removing an instance keeps its shared directories. Destroying the EC2 stack with `make cdk-ec2-destroy` removes its instances, root volumes **and the shared EFS data**. EC2, EBS, EFS and the NAT gateway incur AWS charges.
 
 ## AWS Lambda MicroVM backend
