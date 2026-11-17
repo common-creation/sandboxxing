@@ -129,6 +129,27 @@ test('only the daemon reaches the guest agents', () => {
 const ec2Config = t => JSON.parse(t.Outputs.DaemonConfig.Value['Fn::Join'][1]
   .map(part => (typeof part === 'string' ? part : 'token')).join('')).ec2;
 
+test('guest assets keep fixed keys across deployments', () => {
+  const bucket = stack.resolve(stack.node.findChild('GuestAssets').bucketName);
+  const parts = template.Outputs.DaemonConfig.Value['Fn::Join'][1];
+  const text = parts.filter(part => typeof part === 'string').join('');
+  assert.ok(text.includes('"agent_s3_uri":"s3://') && text.includes('/guest/sandboxxing-agent"'), text);
+  assert.ok(text.includes('"efs_utils_s3_uri":"s3://') && text.includes('/guest/amazon-efs-utils.deb"'), text);
+  assert.ok(!/[0-9a-f]{64}/.test(text), 'DaemonConfig must not name content-addressed asset keys');
+  assert.equal(parts.filter(part => isDeepStrictEqual(part, bucket)).length, 2);
+
+  const boundary = stack.resolve(stack.node.findChild('GuestBoundary').managedPolicyArn).Ref;
+  const get = template.Resources[boundary].Properties.PolicyDocument.Statement.find(s => s.Action === 's3:GetObject');
+  const arn = stack.resolve(stack.node.findChild('GuestAssets').bucketArn);
+  assert.deepEqual(get.Resource, ['sandboxxing-agent', 'amazon-efs-utils.deb'].map(file =>
+    ({ 'Fn::Join': ['', [arn, '/guest/' + file]] })));
+
+  const deployments = Object.values(template.Resources).filter(r => r.Type === 'Custom::CDKBucketDeployment');
+  assert.equal(deployments.length, 1);
+  assert.equal(deployments[0].Properties.DestinationBucketKeyPrefix, 'guest/');
+  assert.deepEqual(deployments[0].Properties.DestinationBucketName, bucket);
+});
+
 test('the stack VPC keeps sandboxes on private addresses behind NAT', () => {
   const types = Object.values(template.Resources).map(r => r.Type);
   assert.ok(types.includes('AWS::EC2::VPC') && types.includes('AWS::EC2::NatGateway'));

@@ -6,13 +6,18 @@ import * as efs from 'aws-cdk-lib/aws-efs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
-import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
 // The data port of the guest agent (agent.DataPort).
 const agentPort = ec2.Port.tcp(8080);
+// The guest agent and the EFS mount helper, in that order, under the fixed
+// key prefix of the guest assets bucket.
+const guestAssets = ['sandboxxing-agent', 'amazon-efs-utils.deb'];
+const guestAssetPrefix = 'guest/';
 const mountActions = [
   'elasticfilesystem:ClientMount',
   'elasticfilesystem:ClientWrite',
@@ -66,14 +71,34 @@ export class SandboxxingEC2Stack extends Stack {
         ],
       }),
     });
+    // Guests download these at their first boot, possibly long after the
+    // daemon recorded the URIs in their user data and IAM policy. CDK asset
+    // keys change with the content, so the files are copied to fixed keys that
+    // every deployment of the stack keeps valid.
     const data = path.join(__dirname, '../../ec2-assets');
-    const agent = new s3assets.Asset(this, 'Agent', { path: path.join(data, 'sandboxxing-agent') });
-    const helper = new s3assets.Asset(this, 'MountHelper', { path: path.join(data, 'amazon-efs-utils.deb') });
+    for (const file of guestAssets) {
+      if (!fs.existsSync(path.join(data, file))) {
+        throw new Error(`${data}/${file} is missing: run "make ec2-assets" first`);
+      }
+    }
+    const assets = new s3.Bucket(this, 'GuestAssets', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+    new s3deploy.BucketDeployment(this, 'GuestAssetsDeployment', {
+      sources: [s3deploy.Source.asset(data, { exclude: ['*', '.*', ...guestAssets.map((file) => '!' + file)] })],
+      destinationBucket: assets,
+      destinationKeyPrefix: guestAssetPrefix,
+    });
+    const [agentKey, helperKey] = guestAssets.map((file) => guestAssetPrefix + file);
     const boundary = new iam.ManagedPolicy(this, 'GuestBoundary', {
       statements: [
         new iam.PolicyStatement({
           actions: ['s3:GetObject'],
-          resources: [agent.bucket.arnForObjects(agent.s3ObjectKey), helper.bucket.arnForObjects(helper.s3ObjectKey)],
+          resources: [assets.arnForObjects(agentKey), assets.arnForObjects(helperKey)],
         }),
         new iam.PolicyStatement({
           actions: mountActions,
@@ -219,8 +244,8 @@ export class SandboxxingEC2Stack extends Stack {
           efs_file_system_id: shares.fileSystemId,
           role_path: rolePath,
           permissions_boundary_arn: boundary.managedPolicyArn,
-          agent_s3_uri: agent.s3ObjectUrl,
-          efs_utils_s3_uri: helper.s3ObjectUrl,
+          agent_s3_uri: assets.s3UrlForObject(agentKey),
+          efs_utils_s3_uri: assets.s3UrlForObject(helperKey),
           ...(publicIp ? { associate_public_ip_address: true } : {}),
         },
       }),
