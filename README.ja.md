@@ -646,6 +646,8 @@ make cdk-ec2-deploy
 
 出力の `DaemonPolicyArn` を daemon の IAM ID にアタッチし、`DaemonConfig` を `/etc/sandboxxing/config.json` にマージします。`sandboxxing -check` を実行してサービスを再起動します。SSH、SFTP、ポート転送の接続先は daemon です。
 
+agent と EFS マウントヘルパーは、スタックが持つバケットの固定キー(`guest/`)に配置します。インスタンスは初回起動時にここから取得するため、agent を更新してスタックを再デプロイしても、`DaemonConfig` のマージをやり直す必要はありません。その後に作成するインスタンスは新しい agent を取得し、作成済みのインスタンスも引き続き起動できます。この方式より前のスタックからの更新時に限り、`DaemonConfig` を一度マージし直し、agent の取得に失敗している(`sandboxxing-agent.service` が S3 の 403 で起動しない)インスタンスを作り直してください。
+
 daemon は各インスタンスのプライベートアドレスの TCP 8080 番ポートで待ち受けるゲスト agent に直接接続します。そのため daemon は、スタックの VPC（出力 `VpcId`）の中か、そこへ経路のあるネットワークで動かす必要があります。VPC 内の daemon には、出力 `DaemonSecurityGroupId` のセキュリティグループをアタッチします。VPN やピアリング越しの daemon の場合は、代わりに `make cdk-ec2-deploy DAEMON_CIDR=<daemon の CIDR>` でデプロイします（デプロイのたびに指定します）。インスタンスのセキュリティグループはそれ以外の受信を許可しません。通信は VPC 内の平文 HTTP で、sandbox ごとの secret で認証します。インスタンスが持つのは secret のダイジェストだけです。
 
 VPC を作成せずにリージョンのデフォルト VPC を使う場合は、`make cdk-ec2-deploy USE_DEFAULT_VPC=true` でデプロイします（デプロイのたびに指定します）。VPC は Lookup で取得し、`deploy/cdk/cdk.context.json` にキャッシュします。このファイルはコミットしません。EFS のマウントターゲットはデフォルト VPC のパブリックサブネットに作成し、sandbox は先頭のサブネットで起動します。デフォルト VPC には NAT ゲートウェイがないため、sandbox はパブリック IPv4 アドレス（アドレスごとに課金されます）で外部へ通信します。インスタンスのセキュリティグループが daemon 以外の受信を許可しない点は変わりません。Lightsail インスタンスがピアリングできるのはデフォルト VPC だけなので、daemon を Lightsail で動かす場合はこのオプションが必要です。Lightsail で VPC ピアリングを有効にし、`DAEMON_CIDR=172.26.0.0/16`（Lightsail の VPC の CIDR）も指定します。EFS のマウントターゲットは1つの VPC にしか置けないため、デプロイ済みのスタックを別の VPC へ移すことはできません。切り替えるには `make cdk-ec2-destroy` で sandbox と共有ファイルごと削除してから、デプロイし直してください。
