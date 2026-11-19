@@ -57,7 +57,7 @@ func (m *Manager) createMicroVM(ctx context.Context, opts Options) (*state.VM, e
 	if opts.Image == "" {
 		opts.Image = m.cfg.MicroVM.DefaultImage
 	}
-	name, err := m.reserveName(opts.Name)
+	name, err := m.reserveName(opts.Name, state.BackendMicroVM)
 	if err != nil {
 		return nil, err
 	}

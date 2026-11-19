@@ -120,14 +120,14 @@ type Options struct {
 // Create builds a new container: the cached golden ext4 image is reflink
 // copied, grown to the requested size, configured, registered and booted.
 func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
-	if opts.Name != "" && !state.ValidName(opts.Name) {
-		return nil, fmt.Errorf("invalid container name %q: use letters, digits, '-', '_' or '.'", opts.Name)
-	}
 	if len(opts.Comment) > 200 {
 		return nil, errors.New("comment must be at most 200 bytes")
 	}
 	if opts.Backend == "" {
 		opts.Backend = m.cfg.DefaultBackend
+	}
+	if opts.Name != "" && !state.ValidNameFor(opts.Backend, opts.Name) {
+		return nil, fmt.Errorf("invalid container name %q: %s", opts.Name, state.NameRule(opts.Backend))
 	}
 	if opts.InstanceType != "" && opts.Backend != state.BackendEC2 {
 		return nil, errors.New("--instance-type requires the ec2 backend")
@@ -147,7 +147,7 @@ func (m *Manager) Create(ctx context.Context, opts Options) (*state.VM, error) {
 		}
 	}
 	m.applyDefaults(&opts)
-	name, err := m.reserveName(opts.Name)
+	name, err := m.reserveName(opts.Name, state.BackendNspawn)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (m *Manager) Copy(ctx context.Context, src string, opts Options) (*state.VM
 	}
 	// A nested container stays nested when it is copied.
 	opts.Nested = opts.Nested || source.Nested
-	name, err := m.reserveName(opts.Name)
+	name, err := m.reserveName(opts.Name, state.BackendNspawn)
 	if err != nil {
 		return nil, err
 	}
@@ -308,14 +308,14 @@ func (m *Manager) applyDefaults(opts *Options) {
 	}
 }
 
-// reserveName returns a free, valid container name. An empty request is
-// replaced by a generated name.
-func (m *Manager) reserveName(name string) (string, error) {
+// reserveName returns a free container name that is valid for backend. An
+// empty request is replaced by a generated name.
+func (m *Manager) reserveName(name, backend string) (string, error) {
 	if name == "" {
 		return m.uniqueName()
 	}
-	if !state.ValidName(name) {
-		return "", fmt.Errorf("invalid container name %q: use letters, digits, '-', '_' or '.'", name)
+	if !state.ValidNameFor(backend, name) {
+		return "", fmt.Errorf("invalid container name %q: %s", name, state.NameRule(backend))
 	}
 	if _, exists := m.state.Get(name); exists {
 		return "", fmt.Errorf("container %q already exists", name)

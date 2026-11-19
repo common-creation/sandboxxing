@@ -88,7 +88,7 @@ func (m *Manager) createEC2(ctx context.Context, opts Options) (*state.VM, error
 	if err := cfg.CheckShares(config.MergeShares(cfg.Shares, opts.Shares)); err != nil {
 		return nil, err
 	}
-	name, err := m.reserveName(opts.Name)
+	name, err := m.reserveName(opts.Name, state.BackendEC2)
 	if err != nil {
 		return nil, err
 	}

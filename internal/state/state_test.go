@@ -3,6 +3,7 @@ package state
 import (
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -89,9 +90,32 @@ func TestValidName(t *testing.T) {
 			t.Errorf("%q should be valid", name)
 		}
 	}
-	for _, name := range []string{"", "-lead", ".dot", "a.b", "with space", "ümlaut", "a/b", "way-too-long-name"} {
+	for _, name := range []string{"", "-lead", ".dot", "a.b", "with space", "ümlaut", "a/b", "Upper", strings.Repeat("a", MaxNameLength+1)} {
 		if ValidName(name) {
 			t.Errorf("%q should be rejected", name)
+		}
+	}
+}
+
+func TestValidNameFor(t *testing.T) {
+	long := "rockchat-compat"
+	for _, backend := range []string{BackendMicroVM, BackendEC2} {
+		if !ValidNameFor(backend, long) {
+			t.Errorf("%q should be valid for %s", long, backend)
+		}
+		if !ValidNameFor(backend, strings.Repeat("a", MaxNameLength)) {
+			t.Errorf("a %d character name should be valid for %s", MaxNameLength, backend)
+		}
+		if ValidNameFor(backend, strings.Repeat("a", MaxNameLength+1)) {
+			t.Errorf("a %d character name should be rejected for %s", MaxNameLength+1, backend)
+		}
+	}
+	for _, backend := range []string{BackendNspawn, ""} {
+		if ValidNameFor(backend, long) {
+			t.Errorf("%q should be rejected for nspawn", long)
+		}
+		if !ValidNameFor(backend, strings.Repeat("a", MaxNspawnNameLength)) {
+			t.Errorf("a %d character name should be valid for nspawn", MaxNspawnNameLength)
 		}
 	}
 }

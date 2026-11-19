@@ -387,11 +387,41 @@ func (s *State) Lock() (*os.File, error) {
 	return f, nil
 }
 
-// ValidName reports whether name is acceptable as a container name. The limit
-// of 12 characters keeps the derived host side veth name ("vb-" + name) below
-// the Linux interface name limit of 15 characters.
+// MaxNameLength is the longest container name. Names become host names, and
+// 63 bytes is the limit of a single DNS label.
+const MaxNameLength = 63
+
+// MaxNspawnNameLength is the longest name of an nspawn container. It keeps the
+// derived host side veth name ("vb-" + name) below the Linux interface name
+// limit of 15 characters. MicroVM and EC2 containers have no such interface.
+const MaxNspawnNameLength = 12
+
+// ValidName reports whether name is acceptable as a container name for any
+// backend. Use ValidNameFor when the backend is known.
 func ValidName(name string) bool {
-	if name == "" || len(name) > 12 {
+	return validName(name, MaxNameLength)
+}
+
+// ValidNameFor reports whether name is acceptable as the name of a new
+// container of the given backend. An empty backend means nspawn.
+func ValidNameFor(backend, name string) bool {
+	return validName(name, maxNameLength(backend))
+}
+
+// NameRule describes the container names ValidNameFor accepts for backend.
+func NameRule(backend string) string {
+	return fmt.Sprintf("use at most %d lowercase letters, digits, '-' or '_', starting with a letter or digit", maxNameLength(backend))
+}
+
+func maxNameLength(backend string) int {
+	if backend == BackendNspawn || backend == "" {
+		return MaxNspawnNameLength
+	}
+	return MaxNameLength
+}
+
+func validName(name string, max int) bool {
+	if name == "" || len(name) > max {
 		return false
 	}
 	for i, r := range name {
