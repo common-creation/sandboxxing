@@ -933,6 +933,10 @@ Existing containers pick the setting up the next time they start.
   it for containers that really need to run their own engine.
 - Container names are used as usernames, so you cannot create a container with
   the same name as one in `admin_users`.
+- Container names use lowercase letters, digits, `-` and `_`, and start with a
+  letter or digit. nspawn containers are limited to 12 characters (so the host
+  side veth name `vb-<name>` fits the 15 character interface name limit);
+  MicroVM and EC2 containers can use up to 63.
 - **Public key authentication is recommended**. The password is a single
   shared secret for both `admin_users` and container names, so a leak affects
   every container. You can disable password authentication with
