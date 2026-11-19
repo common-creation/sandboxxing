@@ -15,9 +15,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/common-creation/sandboxxing/internal/process"
-	"golang.org/x/sys/unix"
 )
 
 // EC2Shares is the desired set of EFS mounts on an EC2 instance. Its home
@@ -45,8 +45,13 @@ func (s *Server) EC2Handler(ctx context.Context, configPath, journalPath string)
 		return nil, errors.New("invalid EC2 agent configuration")
 	}
 	if cfg.Name != "" {
-		if err := unix.Sethostname([]byte(cfg.Name)); err != nil {
-			s.log.Warn("set EC2 host name", "err", err)
+		// hostnamectl also writes /etc/hostname, so the name survives a
+		// reboot, and cloud-init keeps a host name the user has changed.
+		hctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		out, err := process.Output(hctx, "hostnamectl", "set-hostname", "--", cfg.Name)
+		cancel()
+		if err != nil {
+			s.log.Warn("set EC2 host name", "err", err, "output", strings.TrimSpace(string(out)))
 		}
 	}
 	s.cfg = &cfg
